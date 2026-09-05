@@ -46,12 +46,16 @@ and record the result here.
 available. The `DKIOC*` ioctl constants are transcribed from `<sys/disk.h>` and
 have not been checked against a real system.
 
-### 1.3 The Linux backend is compiled and unit-tested, but not exercised against a real block device
+### 1.3 The Linux backend enumerates real devices, but its read path is untested on one
 
-It compiles cleanly and its logic is covered by the fixture tests through the
-shared trait, but `O_DIRECT` against an actual `/dev/sdX`, the sysfs parsing,
-and the buffered/`posix_fadvise` fallback have not been run against real
-hardware.
+Enumeration **is** exercised against real hardware: `rc devices` under WSL2
+lists the machine's actual block devices with model, size, sector size, rotation
+and TRIM, read from sysfs, and correctly reports that their sectors need root.
+
+What is still untested there is the *read* path: `O_DIRECT` against an actual
+`/dev/sdX`, and the buffered + `posix_fadvise(POSIX_FADV_DONTNEED)` fallback.
+Those need a root shell and a device worth reading, so they are covered by the
+same `rc smoke` opt-in as the Windows path.
 
 ---
 
@@ -147,8 +151,15 @@ reports, rather than implying every drive is recoverable.
 `rc-image::resolve` maps an output path to its backing physical device so the
 sink can refuse to write onto a device being scanned. It can legitimately fail
 to resolve (network shares, unusual FUSE mounts, container overlays), in which
-case it reports `Backing::Unknown` and the sink warns rather than refusing.
-Pass `--strict-destination` to make an unresolvable destination a hard error.
+case it returns `Backing::Unknown` and the sink continues rather than refusing.
+`rc image` prints the reason on its own line before starting. Pass
+`--strict-destination` to make an unresolvable destination a hard error instead.
+
+This is not hypothetical on this machine: a destination under `/mnt/d` resolves
+to `Backing::Unknown`, because drvfs is not a block device. Writing a clone
+there is safe -- it cannot be the device being scanned -- but it does mean the
+physical-device comparison contributes nothing in that configuration, and only
+the direct same-file check is doing work.
 
 The direct case — writing onto the very image file being scanned — is always
 caught regardless, and is covered by a test.
@@ -180,6 +191,23 @@ physical device and conclude anything from the mismatch.
 
 ---
 
-## 5. Cleared limitations
+## 5. Benchmarking is not meaningful on this setup yet
 
-None yet. Entries move here with the date and how they were verified.
+Cloning a 512 MiB fixture through `/mnt/d` runs at roughly 18 MiB/s while the
+CPU sits idle, because every read crosses the WSL drvfs bridge. Any throughput
+number measured this way describes the bridge, not the engine.
+
+Milestone 3 requires a real MB/s figure. To produce one, the fixtures and the
+scan must live on native storage -- either a native Windows build (blocked, see
+2.1) or fixtures inside the WSL ext4 filesystem (blocked by C: free space, see
+2.2).
+
+---
+
+## 6. Cleared limitations
+
+- **2026-09-05 -- "enumerate real drives" on Linux.** `rc devices` lists the
+  machine's real block devices from an unelevated shell, with model, size,
+  sector size, rotation and TRIM, and reports "requires root to read sector
+  data" rather than hiding devices it cannot read. Verified by running it under
+  WSL2. This does **not** clear 1.1: the Windows path is still unexecuted.

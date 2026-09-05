@@ -300,6 +300,12 @@ pub fn enumerate() -> Result<Vec<DeviceInfo>> {
         }
         match probe(&path) {
             Ok(mut info) => {
+                // A zero-length block device is an unbacked loop device. It is
+                // not a drive the operator can scan, and listing a dozen of
+                // them buries the real disks.
+                if info.total_sectors == 0 {
+                    continue;
+                }
                 // Report readability honestly without holding the handle open.
                 match open_fd(&path, false) {
                     Ok(_) => {}

@@ -24,7 +24,18 @@ both are in "Blocking questions" below.
 | Matching SHA-256 | done | Clone is byte-identical; streaming digest agrees with re-read |
 | Source hash unchanged | done | Asserted in both crates' test suites |
 | `rc-cli devices/image/verify` | done | Plus `smoke` |
-| **Enumerate real drives** | **partial** | Code written; unexecuted on Windows (no linker) |
+| **Enumerate real drives** | **done on Linux** | `rc devices` lists real block devices unelevated, with honest access + TRIM reporting. Windows/macOS backends written but unexecuted |
+
+End-to-end acceptance was also demonstrated through the CLI itself, not only
+through the test suite: `rc image` cloned the 512 MiB `fat32-basic` fixture and
+the source SHA-256, the clone SHA-256 and the hash recorded in `expected.json`
+at fixture-build time were all identical; `rc verify` passed against the
+generated manifest; and both safety refusals fired (cloning a fixture onto
+itself, and `rc smoke` without its opt-in).
+
+Observed throughput was ~18 MiB/s, which is the `/mnt/d` drvfs bridge rather
+than the engine -- the same clone is CPU-idle. Milestone 3 requires a real
+throughput benchmark; it needs to run against native storage to mean anything.
 
 Full gate, run under WSL2 targeting Linux:
 
@@ -142,6 +153,11 @@ fragmentation?
 - **A fault-injecting device lives behind a `test-util` feature inside
   `rc-device`**, because the sealed trait deliberately prevents test doubles
   from being written in consuming crates.
+- **Added a crate not in SPEC.md section 3: `crates/xtask`.** Section 4.4
+  requires a CI check that greps the dependency tree for networking crates.
+  A Rust xtask parses `cargo metadata` and works identically on all three
+  platforms, where a shell script would not. It is `publish = false` and is
+  never a dependency of the engine.
 
 ---
 

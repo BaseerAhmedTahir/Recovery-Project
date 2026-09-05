@@ -97,7 +97,12 @@ pub fn check_destination(path: &Path, policy: UnknownBackingPolicy) -> Result<Ba
                     reason: reason.clone(),
                 });
             }
-            tracing::warn!(
+            // Logged at debug, not warn: this function is deliberately called
+            // twice (once as a CLI preflight, once inside OutputSink::create),
+            // so warning here prints the same line twice for one operation.
+            // The condition is not swallowed -- it is returned as
+            // Backing::Unknown, and the caller decides how to surface it.
+            tracing::debug!(
                 destination = %path.display(),
                 reason = %reason,
                 "could not determine the physical device backing the destination; \
