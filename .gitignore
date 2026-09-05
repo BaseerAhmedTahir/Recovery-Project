@@ -1,0 +1,23 @@
+# Build output
+/target/
+**/*.rs.bk
+
+# Generated fixtures: large, reproducible from testdata/build_fixtures.sh
+/testdata/fixtures/*
+!/testdata/fixtures/.gitkeep
+
+# Generated corpus (deterministic, rebuilt by make_corpus.py)
+/testdata/corpus/out/
+
+# Imaging output / scratch
+*.raw
+*.dd
+*.img
+*.map
+*.hash
+/scratch/
+.recstate
+
+# OS noise
+Thumbs.db
+.DS_Store

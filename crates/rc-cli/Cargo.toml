@@ -1,0 +1,24 @@
+[package]
+name = "rc-cli"
+description = "The RECOVERY-CORE command line. The CLI is the source of truth; the GUI is a thin client over the same library."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rc"
+path = "src/main.rs"
+
+[dependencies]
+rc-device.workspace = true
+rc-image.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

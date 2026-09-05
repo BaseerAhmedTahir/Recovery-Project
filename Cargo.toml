@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rc-device",
+    "crates/rc-image",
+    "crates/rc-cli",
+    "crates/xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+repository = "local-only"
+
+[workspace.dependencies]
+# --- error handling / logging ---
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- hashing ---
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+
+# --- serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- cli ---
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+
+# --- platform ---
+libc = "0.2"
+
+# --- internal ---
+rc-device = { path = "crates/rc-device" }
+rc-image = { path = "crates/rc-image" }
+
+# Optimise dependencies even in dev/test builds while leaving our own crates
+# unoptimised and debuggable.
+#
+# This is not a micro-optimisation: the immutability test hashes roughly 4 GiB
+# of fixtures twice, and an unoptimised sha2 runs about thirty times slower than
+# a compiled one. Without this the test suite takes tens of minutes instead of
+# well under one.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Release profile tuned for scanning throughput. Debug assertions stay on in
+# dev because on-disk structures we parse are untrusted.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+
+[profile.bench]
+inherits = "release"
+debug = true

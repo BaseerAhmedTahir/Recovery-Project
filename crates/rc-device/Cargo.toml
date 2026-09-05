@@ -1,0 +1,37 @@
+[package]
+name = "rc-device"
+description = "Read-only raw block device access. The only I/O path to a scan source."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+serde = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Threading",
+    "Win32_Security",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+# Fault-injecting device wrapper used by rc-image's recovery tests.
+# Never enabled in a release build.
+test-util = []

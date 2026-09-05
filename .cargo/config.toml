@@ -1,0 +1,13 @@
+# The system drive (C:) on this machine is effectively full, so RUSTUP_HOME and
+# CARGO_HOME live on D: (set as user environment variables). The build target
+# directory is left project-local, which is already on D:.
+#
+# If you ever move this repo to a C: path, uncomment and repoint target-dir.
+# [build]
+# target-dir = "D:/Rust/target/recovery-core"
+
+[alias]
+xtask = "run --package xtask --"
+
+[term]
+verbose = false

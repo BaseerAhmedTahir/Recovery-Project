@@ -1,0 +1,8 @@
+# SPEC.md section 2 specifies "Rust (stable, 2021 edition)". Tracking `stable` rather
+# than pinning an exact version avoids rustup provisioning a second ~500 MB
+# toolchain tree; the workspace `rust-version` floor guards against a too-old
+# stable. Verified against 1.98.1 (2026-09-01).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "default"

@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.rs   text eol=lf
+*.toml text eol=lf
+*.ps1  text eol=crlf
+*.img  binary
+*.raw  binary

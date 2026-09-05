@@ -1,0 +1,79 @@
+name: CI
+
+# The immutability test and the no-network dependency audit are required by
+# SPEC.md sections 4.3 and 4.4 to run on every commit.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Fast feedback: formatting, lints, and the offline guarantee.
+  check:
+    name: fmt, clippy, no-network audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # SPEC.md section 4.4: no networking crate may enter the tree.
+      - name: No-network dependency audit
+        run: cargo xtask audit-deps
+
+  # The safety invariant, against real generated fixtures.
+  test:
+    name: tests + immutability (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Fixture generation needs Linux loop devices and mkfs tools. On Windows
+      # the immutability test still runs against its self-built scratch images,
+      # so the invariant is never silently unchecked.
+      - name: Install fixture tooling
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ntfs-3g dosfstools exfatprogs exfat-fuse e2fsprogs util-linux
+
+      - name: Allow fixture generation to use sudo
+        if: runner.os == 'Linux'
+        run: sudo bash testdata/lib/install_sudoers.sh "$USER"
+
+      - name: Build fixtures
+        if: runner.os == 'Linux'
+        run: ./testdata/build_fixtures.sh
+
+      - name: Test suite
+        run: cargo test --workspace
+
+      # Belt and braces: run the immutability test on its own and surface it as
+      # a distinct check, so a green CI badge always means this specific
+      # guarantee held.
+      - name: Immutability invariant
+        run: cargo test -p rc-device --test immutability -- --nocapture
+
+  # The smoke test in `rc smoke` touches real hardware and is deliberately NOT
+  # run here. It requires RC_SMOKE_ALLOW=1 plus an explicit --device, refuses
+  # the system drive, and is only ever run by hand. See docs/LIMITATIONS.md.
