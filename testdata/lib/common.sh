@@ -129,7 +129,13 @@ rc_mkfs() {
         ext4)
             # ^has_journal is NOT used: the JBD2 journal is the whole point of
             # the Milestone 6 ext4 recovery path.
-            sudo -n mkfs.ext4 -q -F -b "$RC_CLUSTER_BYTES" -L "$label" "$dev"
+            #
+            # -m 0 removes the default 5% root-reserved blocks. With them, a
+            # non-root fill hits ENOSPC while ~25 MiB remains free to root, so
+            # the "volume is full except for a field of holes" setup the
+            # fragmentation fixture depends on is never actually reached and
+            # the file lands contiguously.
+            sudo -n mkfs.ext4 -q -F -m 0 -b "$RC_CLUSTER_BYTES" -L "$label" "$dev"
             ;;
         *) rc_die "unknown filesystem: $fs" ;;
     esac
@@ -149,10 +155,16 @@ rc_mount() {
     case "$fs" in
         ntfs)  sudo -n mount -t ntfs3       -o "uid=$u,gid=$g" "$dev" "$mp" 2>/dev/null \
             || sudo -n mount -t ntfs-3g     -o "uid=$u,gid=$g" "$dev" "$mp" ;;
-        vfat)  sudo -n mount -t vfat        -o "uid=$u,gid=$g" "$dev" "$mp" ;;
+        # utf8=1 is required or the kernel vfat driver mangles non-ASCII long
+        # filenames on the way in, which would make the fixture's ground truth
+        # a lie rather than a test.
+        vfat)  sudo -n mount -t vfat        -o "uid=$u,gid=$g,utf8=1" "$dev" "$mp" ;;
         exfat) sudo -n mount -t exfat       -o "uid=$u,gid=$g" "$dev" "$mp" 2>/dev/null \
             || sudo -n mount -t exfat-fuse  -o "uid=$u,gid=$g" "$dev" "$mp" ;;
-        ext4)  sudo -n mount -t ext4 "$dev" "$mp"; sudo -n chown "$u:$g" "$mp" ;;
+        # nodelalloc: ext4's delayed allocation lets the small filler files be
+        # freed before writeback ever places them, which leaves a large
+        # contiguous free region and defeats the hole field.
+        ext4)  sudo -n mount -t ext4 -o nodelalloc "$dev" "$mp"; sudo -n chown "$u:$g" "$mp" ;;
         *) rc_die "unknown filesystem: $fs" ;;
     esac || rc_die "mount failed: $fs $dev"
     RC_MOUNTS+=("$mp")

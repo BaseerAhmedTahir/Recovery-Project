@@ -3,8 +3,8 @@
 //! SPEC.md section 0: "The CLI is the source of truth; the GUI is a thin
 //! client over the same library." Every capability lands here first.
 //!
-//! Milestone 1 ships four subcommands: `devices`, `image`, `verify`, and the
-//! opt-in `smoke` check against real hardware.
+//! Milestone 1 shipped `devices`, `image`, `verify` and the opt-in `smoke`
+//! check. Milestone 2 adds `list-deleted`.
 
 mod cmd;
 mod output;
@@ -49,6 +49,14 @@ enum Command {
     /// Verify an image against its .hash manifest.
     Verify(cmd::verify::Args),
 
+    /// Recover deleted filenames, sizes, timestamps and the original folder
+    /// tree from a device or image.
+    ///
+    /// Supports NTFS, FAT12/16/32 and exFAT. Allocated files are hidden by
+    /// default; pass --include-allocated to see them.
+    #[command(name = "list-deleted")]
+    ListDeleted(cmd::list_deleted::Args),
+
     /// Read a few sectors from a real device to prove the unbuffered read path
     /// works on this hardware. Opt-in, never run by CI.
     Smoke(cmd::smoke::Args),
@@ -62,6 +70,7 @@ fn main() {
         Command::Devices(a) => cmd::devices::run(a, cli.json),
         Command::Image(a) => cmd::image::run(a, cli.json),
         Command::Verify(a) => cmd::verify::run(a, cli.json),
+        Command::ListDeleted(a) => cmd::list_deleted::run(a, cli.json),
         Command::Smoke(a) => cmd::smoke::run(a, cli.json),
     };
 

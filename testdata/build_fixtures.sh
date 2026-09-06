@@ -29,20 +29,22 @@ OUT_DIR="${RC_FIXTURE_DIR:-$HERE/fixtures}"
 CORPUS_PY="$HERE/corpus/make_corpus.py"
 GENERATOR_VERSION=1
 
-# Files deleted from every basic filesystem fixture. Chosen to span container
-# formats (jpeg/png/pdf/docx/mp4/sqlite/text) and to include a nested path so
-# directory-tree reconstruction is exercised in Milestone 2.
-DELETED_SET=(
-    "photos/img_0001.jpg"
-    "photos/img_0003.jpg"
-    "photos/nested/img_0004.jpg"
-    "photos/screenshot.png"
-    "docs/report.pdf"
-    "docs/letter.docx"
-    "video/clip_a.mp4"
-    "data/messages.sqlite"
-    "data/readme.txt"
-)
+# Files deleted from every basic filesystem fixture, and therefore the set the
+# Milestone 2 name-accuracy bar is measured against.
+#
+# Populated from `make_corpus.py --deleted-set` in main(), not restated here:
+# the list contains non-ASCII names and a 250-character name, and maintaining
+# those in two places is a typo waiting to happen.
+DELETED_SET=()
+
+# The corpus file deliberately fragmented before deletion. Also from Python.
+FRAG_TARGET=""
+
+# Fragmentation shape for that file. The volume is filled so the only free
+# space left is a field of FRAG_HOLE_KIB holes, which forces the allocator to
+# split the target across several of them.
+FRAG_HOLE_KIB="${RC_FRAG_HOLE_KIB:-32}"
+FRAG_SMALL_TOTAL_MIB="${RC_FRAG_SMALL_TOTAL_MIB:-48}"
 
 ALL_FIXTURES=(
     ntfs-basic
@@ -67,16 +69,189 @@ in_deleted_set() {
     return 1
 }
 
-# populate_corpus MOUNTPOINT MANIFEST_JSON
-# Copies every corpus file in, syncing between files so the allocator lays them
-# down in a predictable order.
+# populate_corpus MOUNTPOINT SRCDIR [EXCLUDE_REL]
+# Copies every corpus file in, syncing at the end so the allocator lays them
+# down in a predictable order. An optional relative path is skipped, used to
+# hold back the file that gets fragmented separately.
 populate_corpus() {
-    local mp="$1" src="$2"
-    (cd "$src" && find . -type f | sort | while read -r f; do
-        mkdir -p "$mp/$(dirname "${f#./}")"
-        cp "$f" "$mp/${f#./}"
+    local mp="$1" src="$2" exclude="${3:-}"
+    # -print0/read -d '' because the corpus contains names with spaces.
+    (cd "$src" && find . -type f -print0 | sort -z | while IFS= read -r -d '' f; do
+        rel="${f#./}"
+        [[ -n "$exclude" && "$rel" == "$exclude" ]] && continue
+        mkdir -p "$mp/$(dirname "$rel")"
+        cp "$f" "$mp/$rel"
     done)
     sync
+}
+
+# fragment_one MOUNTPOINT SRCDIR REL
+#
+# Forces REL to be laid down in several non-adjacent runs.
+#
+# Simply writing a file onto a fresh volume gives a contiguous one, and merely
+# deleting some filler is not enough either: allocators happily use the large
+# contiguous tail instead of the holes. So the volume is filled almost
+# completely, the remainder is filled with small files, and every other one is
+# deleted. After that the *only* free space is a field of FRAG_HOLE_KIB holes,
+# and the target cannot be stored contiguously.
+fragment_one() {
+    local mp="$1" src="$2" rel="$3"
+    local size_kib
+    size_kib=$(( ( $(stat -c %s "$src/$rel") + 1023 ) / 1024 ))
+    rc_log "fragmenting $rel (${size_kib}KiB) with ${FRAG_HOLE_KIB}KiB holes"
+
+    FRAG_MP="$mp" FRAG_HOLE_KIB="$FRAG_HOLE_KIB" \
+    FRAG_SMALL_TOTAL_MIB="$FRAG_SMALL_TOTAL_MIB" python3 - <<'PY'
+import os, sys
+
+mp = os.environ["FRAG_MP"]
+hole_kib = int(os.environ["FRAG_HOLE_KIB"])
+small_total = int(os.environ["FRAG_SMALL_TOTAL_MIB"]) * 1024 * 1024
+
+def free_bytes():
+    st = os.statvfs(mp)
+    return st.f_bavail * st.f_frsize
+
+# 1. Consume the bulk of the volume with one big file, leaving only the
+#    region that will become the hole field.
+big = os.path.join(mp, ".bigfill")
+chunk = b"\xC3" * (4 * 1024 * 1024)
+with open(big, "wb") as fh:
+    while free_bytes() > small_total:
+        want = min(len(chunk), max(0, free_bytes() - small_total))
+        if want <= 0:
+            break
+        try:
+            fh.write(chunk[:want])
+            fh.flush()
+        except OSError:
+            break
+os.sync()
+
+# 2. Fill the remainder with small files until the volume is full.
+small_dir = os.path.join(mp, ".smallfill")
+os.makedirs(small_dir, exist_ok=True)
+blob = b"\x5A" * (hole_kib * 1024)
+written = 0
+while True:
+    try:
+        with open(os.path.join(small_dir, "s%06d" % written), "wb") as fh:
+            fh.write(blob)
+        written += 1
+    except OSError:
+        break
+os.sync()
+
+# 3. Punch alternating holes.
+holes = 0
+for i in range(0, written, 2):
+    try:
+        os.unlink(os.path.join(small_dir, "s%06d" % i))
+        holes += 1
+    except OSError:
+        pass
+os.sync()
+print("    filler=%d holes=%d free=%.1fMiB"
+      % (written, holes, free_bytes() / 1048576.0), file=sys.stderr)
+PY
+
+    # 4. Write the target into the hole field.
+    mkdir -p "$mp/$(dirname "$rel")"
+    cp "$src/$rel" "$mp/$rel"
+    sync
+
+    # 5. Remove the filler. The target stays where it was allocated.
+    rm -rf "$mp/.smallfill" "$mp/.bigfill"
+    sync
+}
+
+# fragment_check IMAGE SRCFILE -> echoes "contiguous", "fragmented" or "absent"
+#
+# Answers the question directly from the finished image rather than asking the
+# filesystem driver, because the driver cannot be asked reliably: filefrag
+# falls back to FIBMAP on vfat and exfat (root only) and neither ntfs-3g nor
+# exfat-fuse implement FIEMAP at all. Only ext4 answers unprivileged.
+#
+# Searching the image is also the more useful question. "Do this file's bytes
+# appear as one contiguous run on the disk?" is exactly what decides whether
+# contiguous carving can recover it, which is what Milestones 3 and 4 are
+# graded on. A filesystem extent count is a proxy for that; this is the thing
+# itself.
+fragment_check() {
+    local img="$1" src="$2"
+    RC_IMG="$img" RC_SRC="$src" python3 - <<'PY'
+import os, sys
+
+img = os.environ["RC_IMG"]
+src = os.environ["RC_SRC"]
+data = open(src, "rb").read()
+if len(data) < 8192:
+    print("absent")
+    sys.exit(0)
+
+needle = data[:4096]
+with open(img, "rb") as fh:
+    blob = fh.read()
+
+# Every place the file's first 4 KiB appears. Random-ish content makes a
+# spurious hit vanishingly unlikely, but check them all rather than assume.
+pos = blob.find(needle)
+while pos != -1:
+    if blob[pos:pos + len(data)] == data:
+        print("contiguous")
+        sys.exit(0)
+    pos = blob.find(needle, pos + 1)
+
+# The head is present but the whole file is not stored in one run.
+print("fragmented" if blob.find(needle) != -1 else "absent")
+PY
+}
+
+# verify_populated MOUNTPOINT SRCDIR
+#
+# Confirm every corpus file is present on the volume under exactly the name it
+# was given, before anything is deleted.
+#
+# Without this the ground truth could be a lie: expected.json records the
+# corpus's paths, but a filesystem that mangles a name on the way in (vfat
+# without utf8=1 turning non-ASCII into underscores, a driver truncating a
+# 250-character name) would leave the manifest claiming a file that is not
+# there under that name. The parser would then be graded against a name no
+# recovery tool could ever produce.
+verify_populated() {
+    local mp="$1" src="$2"
+    RC_MP="$mp" RC_SRC="$src" python3 - <<'PY'
+import os, sys
+
+mp = os.environ["RC_MP"]
+src = os.environ["RC_SRC"]
+
+def walk(root):
+    out = set()
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            rel = os.path.relpath(os.path.join(dirpath, f), root)
+            out.add(rel.replace(os.sep, "/"))
+    return out
+
+want = walk(src)
+got = walk(mp)
+missing = sorted(want - got)
+extra = sorted(g for g in (got - want) if not g.startswith("."))
+
+if missing:
+    print("  MISSING from the volume (%d):" % len(missing), file=sys.stderr)
+    for m in missing[:10]:
+        print("    %r" % m, file=sys.stderr)
+if extra:
+    print("  UNEXPECTED on the volume (%d):" % len(extra), file=sys.stderr)
+    for e in extra[:10]:
+        print("    %r" % e, file=sys.stderr)
+if missing or extra:
+    sys.exit(1)
+print("  verified %d files present under their exact names" % len(want), file=sys.stderr)
+PY
 }
 
 # delete_subset MOUNTPOINT
@@ -96,8 +271,13 @@ write_expected() {
     local name="$1" fs="$2" img="$3" cmanifest="$4" partitioned="$5" notes="$6"
     local extra="${7:-{\}}"
     local deleted_json
+    # Read as bytes and split on newline only. `.strip()` here would silently
+    # eat leading and trailing spaces, and the corpus contains a filename with
+    # a space in it precisely because that is a thing real filesystems allow.
     deleted_json="$(printf '%s\n' "${DELETED_SET[@]}" | python3 -c \
-        'import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
+        'import sys, json
+raw = sys.stdin.buffer.read().decode("utf-8")
+print(json.dumps([l for l in raw.split("\n") if l]))')"
 
     RC_NAME="$name" RC_FS="$fs" RC_IMG="$img" \
     RC_SHA="$(rc_sha256 "$img")" RC_BYTES="$(stat -c %s "$img")" \
@@ -167,16 +347,48 @@ build_basic() {
     rc_mkfs "$fs" "$dev" "$label"
     mp="$(rc_mount "$fs" "$dev")"
 
-    populate_corpus "$mp" "$CORPUS_DIR"
-    rc_log "copied $(find "$CORPUS_DIR" -type f | wc -l) files"
+    # Everything except the fragmentation target, which is written separately
+    # so it can be forced into non-contiguous runs.
+    populate_corpus "$mp" "$CORPUS_DIR" "$FRAG_TARGET"
+    rc_log "copied $(( $(find "$CORPUS_DIR" -type f | wc -l) - 1 )) files"
+    fragment_one "$mp" "$CORPUS_DIR" "$FRAG_TARGET"
+
+    # Names must survive the write before the ground truth can claim them.
+    verify_populated "$mp" "$CORPUS_DIR" \
+        || rc_die "$name: the volume does not hold the corpus under its exact names"
+
     delete_subset "$mp"
     rc_log "deleted ${#DELETED_SET[@]} files"
 
     rc_umount "$mp"
     rc_loop_detach "$dev"
 
+    # Verified against the finished image, not asserted.
+    local layout
+    layout="$(fragment_check "$img" "$CORPUS_DIR/$FRAG_TARGET")"
+    rc_log "$FRAG_TARGET layout on disk: $layout"
+    [[ "$layout" == "fragmented" ]] || rc_log "WARNING: expected a fragmented layout, got '$layout'"
+
+    local extra
+    extra="$(RC_LAYOUT="$layout" RC_TGT="$FRAG_TARGET" RC_HOLE="$FRAG_HOLE_KIB" python3 -c '
+import json, os
+layout = os.environ["RC_LAYOUT"]
+print(json.dumps({"fragmented_file": {
+    "path": os.environ["RC_TGT"],
+    "hole_kib": int(os.environ["RC_HOLE"]),
+    "layout": layout,
+    "verified": layout in ("contiguous", "fragmented"),
+    "note": ("Written into a field of holes so it could not be stored "
+             "contiguously, then deleted. Verified by searching the finished "
+             "image for the file bytes as one contiguous run, which is "
+             "filesystem-independent and is exactly the property contiguous "
+             "carving depends on. FAT zeroes the cluster chain on delete, so "
+             "assuming contiguity recovers the wrong bytes for this file."),
+}}))')"
+
     write_expected "$name" "$fs" "$img" "$CORPUS_MANIFEST" false \
-        "Whole-device $fs filesystem, no partition table. Corpus copied in full, then a fixed subset deleted."
+        "Whole-device $fs filesystem, no partition table. Corpus copied in full, then a fixed subset deleted. One file was deliberately fragmented before deletion." \
+        "$extra"
     rc_log "wrote $(basename "${img%.img}.expected.json")"
 }
 
@@ -308,6 +520,15 @@ build_quickformat() {
     rc_log "quick-reformatting (metadata discarded, content left in place)"
     rc_mkfs "$fs" "$dev" RCWIPED
     rc_loop_detach "$dev"
+
+    # A "quick format" that zeroed the volume would leave a fixture that tests
+    # nothing at all, and it would pass silently. Confirm a known corpus file's
+    # bytes are still present before recording the ground truth.
+    local survived
+    survived="$(fragment_check "$img" "$CORPUS_DIR/$FRAG_TARGET")"
+    rc_log "post-format content check: $FRAG_TARGET is $survived"
+    [[ "$survived" == "absent" ]] && rc_die         "the quick format destroyed the file content; this fixture would test nothing.
+Check that mkfs.ntfs is being invoked with -Q." 
 
     RC_ALL_DELETED=1 write_all_deleted_expected "$name" "$fs" "$img" \
         "Corpus written to an NTFS volume, then quick-reformatted. All filesystem metadata for the original files is gone; content remains and should be recoverable by signature carving in Milestone 3."
@@ -499,6 +720,32 @@ main() {
     rc_require_sudo
     mkdir -p "$OUT_DIR"
 
+    # Take the exclusive side of the lock the Rust tests hold shared.
+    #
+    # The immutability tests hash a fixture, scan it, and hash it again. A
+    # rebuild landing between those two hashes makes the safety test report
+    # that scanning modified the source, which is false and trains everyone to
+    # dismiss the one test guarding the invariant that matters most. Blocking
+    # here removes the race rather than documenting it.
+    exec 9>"$OUT_DIR/.lock"
+    if command -v flock >/dev/null 2>&1; then
+        if ! flock -n 9; then
+            rc_log "waiting for the fixtures lock (tests are reading them)..."
+            flock 9
+        fi
+    else
+        rc_log "WARNING: flock is unavailable; a concurrent test run could see a half-built fixture"
+    fi
+
+    # Single source of truth for both lists; see make_corpus.py. Read as bytes
+    # because the deleted set contains non-ASCII names.
+    mapfile -t DELETED_SET < <(python3 "$CORPUS_PY" --deleted-set)
+    FRAG_TARGET="$(python3 "$CORPUS_PY" --fragment-target)"
+    (( ${#DELETED_SET[@]} > 0 )) || rc_die "make_corpus.py returned an empty deleted set"
+    [[ -n "$FRAG_TARGET" ]] || rc_die "make_corpus.py returned no fragment target"
+    rc_log "deleted set: ${#DELETED_SET[@]} files; fragment target: $FRAG_TARGET"
+    mkdir -p "$OUT_DIR"
+
     # Build the corpora once and reuse across fixtures.
     local work
     work="$(mktemp -d)"
@@ -531,6 +778,7 @@ main() {
     rm -rf "$work"
     rc_step "done"
     ls -la "$OUT_DIR" >&2
+    # (.lock is the test-coordination lock, not a fixture)
 }
 
 main "$@"

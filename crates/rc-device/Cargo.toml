@@ -25,6 +25,9 @@ windows-sys = { version = "0.59", features = [
 libc.workspace = true
 
 [dev-dependencies]
+# Self dev-dependency so the crate's own integration tests can reach the
+# `test-util` module (the fixture lock and the fault injector).
+rc-device = { path = ".", features = ["test-util"] }
 sha2.workspace = true
 hex.workspace = true
 serde_json.workspace = true

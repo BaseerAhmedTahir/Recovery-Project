@@ -29,7 +29,9 @@ path never exercises:
 - elevation detection.
 
 Until `rc smoke --device <a throwaway USB stick>` has been run successfully on
-real hardware, **treat the Windows raw-device path as untested code**. Use the
+real hardware, **treat the Windows raw-device path as untested code**. This is
+a hard gate on Milestone 8: the GUI does not start until it has been run (see
+`docs/PROGRESS.md`). Use the
 image-file path (`rc image /path/to/disk.img ...`) for anything that matters.
 
 To clear this caveat:
@@ -125,9 +127,41 @@ minutes. A full `build_fixtures.sh` run takes roughly ten.
 
 ### 3.1 Not yet implemented
 
-Milestone 1 delivers device access and imaging only. There is **no** filesystem
-parsing, **no** carving, **no** scoring and **no** mobile support yet. `rc` has
-four subcommands: `devices`, `image`, `verify`, `smoke`.
+Milestones 1 and 2 deliver device access, imaging, partition discovery and
+deleted-entry recovery for NTFS, FAT12/16/32 and exFAT. There is still **no**
+signature carving, **no** fragment reassembly, **no** scoring and **no** mobile
+support. `rc` has five subcommands: `devices`, `image`, `verify`, `smoke`,
+`list-deleted`.
+
+**ext4, APFS and HFS+ are not implemented.** `rc list-deleted` says so
+explicitly rather than reporting zero deleted files, which would be a lie.
+ext4 (with JBD2 journal replay) is Milestone 6.
+
+### 3.1a A deleted FAT or exFAT file's layout is a guess, not a fact
+
+FAT and exFAT both clear a file's cluster chain when it is unlinked, keeping
+only the starting cluster in the directory entry. The rest of the layout is
+**not recoverable from the filesystem**. Assuming contiguity is a guess, and it
+is wrong exactly when the file was fragmented.
+
+This is modelled explicitly: such files carry
+`DataLocation::FirstClusterOnly`, whose `is_exact()` is false, and
+`rc list-deleted` prints "first cluster N only (chain lost on delete)" rather
+than a run count. Nothing downstream may treat it as a known layout until
+`rc-bifrag` lands in Milestone 4.
+
+NTFS is different: the runlist lives in the MFT record and survives deletion,
+so a fragmented NTFS file reports its exact extents.
+
+### 3.1b FAT timestamps have no timezone
+
+FAT stores local time with two-second granularity and records no UTC offset at
+all, so an exact instant is not recoverable - only whatever the writing
+machine's clock was set to. `Timestamps::utc_known` is false for FAT and the
+CLI appends `?` to those times. exFAT records an explicit UTC offset byte and
+NTFS uses UTC throughout, so both are exact.
+
+Milestone 8's deletion-date filter must not treat FAT timestamps as UTC.
 
 ### 3.2 Recovery outlook is genuinely poor on some media
 
@@ -173,6 +207,23 @@ physical device and conclude anything from the mismatch.
 
 ---
 
+## 3.5 The Milestone 2 accuracy score measures metadata, not recovery
+
+`docs/PROGRESS.md` records 100% name, path and size accuracy for NTFS, FAT32
+and exFAT. Read that narrowly:
+
+- It is derived entirely from directory entries and MFT records. It says
+  nothing about whether a file's **content** can be recovered.
+- FAT32 and exFAT score 16/16 on size for a file whose layout they report as
+  `first cluster only`. The size is exact; the location of most of the bytes
+  is unknown. Those two facts sit in the same row of the same table.
+- The sample is 16 files on one on-disk layout per filesystem. Zero misses
+  allowed is high-variance, not strong evidence.
+
+Byte-level recovery is what Milestones 3 and 4 grade.
+
+---
+
 ## 4. Test-coverage gaps
 
 - **No bad-sector hardware test.** The trim and scrape passes are exercised by
@@ -188,6 +239,10 @@ physical device and conclude anything from the mismatch.
   optional volume dismount to stop cache interference; not done.
 - **No test for a source larger than 2 TB**, where 32-bit offset bugs would
   surface.
+- **No carving precision measurement yet.** Recall without precision is
+  meaningless for a signature carver; see `docs/PROGRESS.md`.
+- **The candidate index has never been under memory pressure.** The 2 GB RSS
+  ceiling from Milestone 3 cannot be tested against 512 MiB fixtures.
 
 ---
 

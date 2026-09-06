@@ -1,10 +1,79 @@
 # PROGRESS
 
-Running status per SPEC.md section 9. Last updated 2026-09-05.
+Running status per SPEC.md section 9. Last updated 2026-09-06.
 
-**Current state: Milestone 1 complete on the Linux/image-file path.**
-One acceptance criterion is partially met and one environment blocker is open —
-both are in "Blocking questions" below.
+**Current state: Milestones 1 and 2 complete on the Linux/image-file path.**
+The Windows raw-device backend is still unexecuted and is now a hard gate on
+Milestone 8; see below.
+
+---
+
+## Milestone 2 acceptance
+
+> `rc-partition`, NTFS + FAT32 + exFAT parsers, `rc-cli list-deleted`.
+> Recover deleted filenames, sizes, timestamps and original folder tree from
+> fixtures; >=95% name accuracy.
+
+| Filesystem | Name | Path | Size |
+|---|---|---|---|
+| NTFS  | **16/16 (100%)** | 16/16 | 16/16 |
+| FAT32 | **16/16 (100%)** | 16/16 | 16/16 |
+| exFAT | **16/16 (100%)** | 16/16 | 16/16 |
+
+The graded set is deliberately adversarial rather than a flat directory of
+short ASCII names, which would measure nothing:
+
+- nine levels of directory nesting
+- four non-ASCII names across CJK, Cyrillic+Greek, Arabic and Latin, one of
+  them (emoji) using UTF-16 surrogate pairs and one written in decomposed
+  (NFD) form while a sibling uses precomposed (NFC)
+- a 250-character name: 20 LFN entries on FAT, the format maximum, and 17
+  filename entries on exFAT
+- a file deliberately fragmented before deletion
+
+With 16 files, the 95% bar allows zero misses.
+
+### What this score does and does not mean
+
+**It measures metadata recovery only, which is the easy half.** Every number
+above comes from directory entries and MFT records. None of it says whether
+the file's *bytes* come back.
+
+The fragmented file makes the point against the score itself: FAT32 and exFAT
+both report 16/16 on size while reporting `first cluster only` for that file.
+The parser knows exactly how large it was and has no idea where most of it
+lives. A size column is not a recovery.
+
+**N=16 with zero misses allowed is high-variance, not strict.** It sounds
+demanding but it is a small sample of one particular on-disk layout. Before
+100% is treated as a property of the parsers rather than of these fixtures,
+the corpus needs to grow to a few hundred files. Tracked as a Milestone 3
+prerequisite below.
+
+Byte-level recovery is graded in Milestone 3 (contiguous carving) and
+Milestone 4 (fragment reassembly). Those are the numbers that say whether this
+tool works.
+
+`rc-partition` additionally rebuilds the destroyed partition table in the
+`nopart` fixture, relocating the NTFS volume at LBA 2048 by boot-sector
+signature with 95% confidence, and reports it as `reconstructed` rather than
+as though it had been read from a table.
+
+### What the fragmented file shows
+
+The same file, fragmented before deletion, reports differently per filesystem,
+and each answer is the honest one:
+
+| Filesystem | Reported layout | Why |
+|---|---|---|
+| NTFS | `3 extents` | the runlist survives deletion, so the layout is known exactly |
+| exFAT | `first cluster only` | the FAT chain is cleared on delete |
+| FAT32 | `first cluster only` | same |
+
+FAT and exFAT deleted files therefore carry `DataLocation::FirstClusterOnly`,
+which reports `is_exact() == false`, so nothing downstream can mistake the
+contiguity assumption for a fact. Turning that guess into an answer is
+Milestone 4's job.
 
 ---
 
@@ -135,6 +204,29 @@ fragmentation?
 
 ---
 
+## Gate: the Windows backend must be verified before Milestone 8
+
+**Decided 2026-09-05.** Windows is the daily driver here *and* the primary
+target, but it cannot currently compile (no MSVC linker, C: full), so the
+Windows raw-device backend is accumulating unverified code behind the
+Linux/image-file path.
+
+The agreed handling:
+
+1. **Run `rc smoke` against a spare USB stick as soon as the toolchain builds.**
+   This is the cheap action and it clears the largest caveat in
+   `docs/LIMITATIONS.md`.
+2. **Hard gate: Milestone 8 (the Tauri GUI) does not start until the Windows
+   raw-device read path has been executed against real hardware.** Building a
+   GUI on top of an unexecuted device layer would mean discovering backend bugs
+   through a UI, which is the worst place to find them.
+
+Milestones 2 through 7 may proceed on the Linux/image path in the meantime,
+because every one of them is graded against fixture images rather than against
+a physical device.
+
+---
+
 ## Decisions made this session
 
 - **Rust toolchain on D:** `RUSTUP_HOME`/`CARGO_HOME` at `D:\Rust\`, because C:
@@ -153,6 +245,15 @@ fragmentation?
 - **A fault-injecting device lives behind a `test-util` feature inside
   `rc-device`**, because the sealed trait deliberately prevents test doubles
   from being written in consuming crates.
+- **The fixtures directory is locked, not just documented.** Tests take a
+  shared advisory lock on `testdata/fixtures/.lock`; `build_fixtures.sh` takes
+  the exclusive side and blocks. This was added after a concurrent rebuild made
+  the immutability test report that scanning had modified a fixture. The
+  diagnosis was correct, but a safety test that can fail for reasons unrelated
+  to a write is worse than no test: it teaches everyone to dismiss the one
+  check guarding the invariant that matters most. Verified by running the test
+  against a live rebuild, where it blocked for 19 minutes and then passed
+  instead of failing.
 - **Added a crate not in SPEC.md section 3: `crates/xtask`.** Section 4.4
   requires a CI check that greps the dependency tree for networking crates.
   A Rust xtask parses `cargo metadata` and works identically on all three
@@ -161,12 +262,57 @@ fragmentation?
 
 ---
 
-## Next: Milestone 2
+## Next: Milestone 3
 
-`rc-partition`, then NTFS + FAT32 + exFAT parsers, then `rc-cli list-deleted`.
-Acceptance is >=95% filename accuracy plus correct sizes, timestamps and the
-original folder tree, graded against the `*-basic` fixtures.
+`rc-carve` signature engine plus validators, `rc-index`, and a throughput
+benchmark. Acceptance: carve 20+ formats from the quick-formatted fixture,
+byte-exact recovery of contiguous files, report MB/s, peak RSS under 2 GB.
 
-Not started. Milestone 1's acceptance tests pass, so this is unblocked on the
-Linux path — but I would rather resolve blocking question 1 first, so the
-Windows backend stops accumulating unverified code behind it.
+Four things to settle first, all of which decide whether the carving grade
+means anything:
+
+0. **Grade precision, not just recall.** Signature carving produces enormous
+   false-positive volume: `FF D8 FF` occurs by chance, inside other files, and
+   legitimately inside every JPEG carrying an EXIF thumbnail. A carver that
+   emits 80,000 candidates and happens to include all 16 targets scores 100%
+   recall and is useless. The acceptance test must report both numbers plus
+   the rank of the graded files among candidates. The 14 files that were *not*
+   deleted are free precision distractors and must not appear in deleted-only
+   mode.
+
+0b. **Grow the corpus to a few hundred files** before treating any accuracy
+   figure as a property of the code.
+
+0c. **Every footerless format needs a per-format maximum size**, or one
+   spurious header swallows gigabytes. And OOXML files carve as bare ZIPs, so
+   sniff `[Content_Types].xml` to emit `.docx`/`.xlsx`/`.pptx` rather than
+   `.zip`.
+
+Then:
+
+1. **The throughput benchmark is not currently measurable.** Two separate
+   problems. Over `/mnt/d` the engine reports ~20 MiB/s while the CPU idles,
+   which describes the WSL drvfs bridge. And a 512 MiB image fits in RAM, so
+   any figure from it measures the page cache, not a device. A real number
+   needs a fixture several times larger than RAM with caches dropped between
+   runs, or it must be recorded plainly as cache-bound with the real
+   measurement deferred to the hardware smoke test. It must not be written
+   down as a device throughput number.
+2. **The 2 GB RSS ceiling needs a fixture that can breach it.** Half a
+   gigabyte passes trivially whether the candidate index is disk-backed or
+   entirely in RAM, so the current fixtures prove nothing about the thing the
+   requirement exists to prove. This needs a sparse multi-GB image seeded with
+   enough candidates to create real index pressure.
+
+3. **Confirm `quickformat` is genuinely a quick format.** `mkfs.ntfs -F -Q` is
+   what the generator uses, and the build now verifies empirically that a known
+   corpus file's bytes survive the reformat rather than trusting the flag. A
+   fixture whose volume had been zeroed would pass every carving test by
+   testing nothing.
+
+4. **Four fixtures carried the pre-Milestone-2 corpus.** `quickformat`,
+   `overwritten`, `fragmented-jpeg` and `nopart` were built before the
+   adversarial names were added. Each one's `expected.json` records what was
+   actually written, so they are self-consistent and the current tests are
+   valid, but they were rebuilt before starting Milestone 3 so carving is
+   graded against the adversarial corpus.

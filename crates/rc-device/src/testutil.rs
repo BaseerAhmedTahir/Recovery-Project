@@ -97,6 +97,75 @@ impl ReadOnlyDevice for FaultyDevice {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fixture locking
+// ---------------------------------------------------------------------------
+
+/// Advisory lock over the generated fixtures directory.
+///
+/// The immutability tests hash a fixture, scan it, and hash it again. If
+/// `build_fixtures.sh` rewrites that file in between, the hashes differ and the
+/// test reports that scanning modified the source - which is false, and far
+/// worse than a plain failure: it is a *safety* test crying wolf. Once it has
+/// done that a few times the reflex becomes "probably the rebuild again", and
+/// the one test guarding the invariant that matters most stops being believed.
+///
+/// So the race is made structurally impossible rather than explained away.
+/// Tests take a shared lock; `build_fixtures.sh` takes an exclusive one with
+/// `flock` on the same file. Neither can run while the other holds it.
+pub struct FixtureLock {
+    _file: std::fs::File,
+}
+
+/// Take a shared lock on `<dir>/.lock`, blocking until the fixture builder
+/// releases it.
+///
+/// Failure to lock is deliberately not an error: on a filesystem without
+/// working advisory locks the tests should still run, just without the
+/// guarantee. What must never happen is a silent pass.
+pub fn lock_fixtures(dir: &std::path::Path) -> std::io::Result<FixtureLock> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(".lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // LOCK_SH blocks while build_fixtures.sh holds LOCK_EX.
+        // SAFETY: fd is owned by `file` and outlives the call.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+        if rc != 0 {
+            tracing::warn!(
+                path = %path.display(),
+                "could not take a shared lock on the fixtures directory; a concurrent \
+                 fixture rebuild could make an immutability test fail spuriously"
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::LockFileEx;
+        use windows_sys::Win32::System::IO::OVERLAPPED;
+
+        let handle = file.as_raw_handle() as isize as *mut std::ffi::c_void;
+        let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+        // Shared lock (no LOCKFILE_EXCLUSIVE_LOCK), blocking.
+        // SAFETY: handle is live for the lifetime of `file`.
+        let ok = unsafe { LockFileEx(handle, 0, 0, u32::MAX, u32::MAX, &mut ov) };
+        if ok == 0 {
+            tracing::warn!("could not take a shared lock on the fixtures directory");
+        }
+    }
+
+    Ok(FixtureLock { _file: file })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

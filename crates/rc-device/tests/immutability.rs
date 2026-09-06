@@ -49,6 +49,18 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Hold a shared lock on the fixtures directory for the duration of a test.
+///
+/// `build_fixtures.sh` takes the exclusive side, so a rebuild cannot land
+/// between this test's two hashes. Without it the test can report that
+/// scanning modified the source when in fact another process rewrote the
+/// file - a false alarm on the one test guarding the project's core safety
+/// invariant, which is worse than no test at all because it teaches everyone
+/// to dismiss it.
+fn lock_fixtures() -> Option<rc_device::testutil::FixtureLock> {
+    rc_device::testutil::lock_fixtures(&workspace_root().join("testdata").join("fixtures")).ok()
+}
+
 fn fixture_images() -> Vec<PathBuf> {
     let dir = workspace_root().join("testdata").join("fixtures");
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -191,6 +203,7 @@ fn scanning_never_modifies_the_source() {
 /// Every generated fixture, when they have been built.
 #[test]
 fn generated_fixtures_are_not_modified_by_scanning() {
+    let _lock = lock_fixtures();
     let images = fixture_images();
     if images.is_empty() {
         eprintln!(

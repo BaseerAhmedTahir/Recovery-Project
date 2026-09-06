@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/rc-device",
     "crates/rc-image",
+    "crates/rc-partition",
+    "crates/rc-fs",
     "crates/rc-cli",
     "crates/xtask",
 ]
@@ -40,6 +42,8 @@ libc = "0.2"
 # --- internal ---
 rc-device = { path = "crates/rc-device" }
 rc-image = { path = "crates/rc-image" }
+rc-partition = { path = "crates/rc-partition" }
+rc-fs = { path = "crates/rc-fs" }
 
 # Optimise dependencies even in dev/test builds while leaving our own crates
 # unoptimised and debuggable.

@@ -373,7 +373,9 @@ dependencies = [
  "hex",
  "indicatif",
  "rc-device",
+ "rc-fs",
  "rc-image",
+ "rc-partition",
  "serde",
  "serde_json",
  "sha2",
@@ -387,12 +389,27 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "libc",
+ "rc-device",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
  "tracing",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rc-fs"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rc-device",
+ "rc-partition",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -409,6 +426,19 @@ dependencies = [
  "thiserror",
  "tracing",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rc-partition"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rc-device",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

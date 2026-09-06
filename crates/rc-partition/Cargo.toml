@@ -1,0 +1,23 @@
+[package]
+name = "rc-partition"
+description = "MBR/GPT parsing and in-memory lost-partition rebuild. Never writes a partition table."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc-device.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+rc-device = { path = "../rc-device", features = ["test-util"] }
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]

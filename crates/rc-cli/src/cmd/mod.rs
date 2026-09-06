@@ -2,5 +2,6 @@
 
 pub mod devices;
 pub mod image;
+pub mod list_deleted;
 pub mod smoke;
 pub mod verify;

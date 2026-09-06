@@ -35,6 +35,7 @@ import sqlite3
 import struct
 import sys
 import tempfile
+import unicodedata
 import zipfile
 import zlib
 
@@ -573,6 +574,128 @@ CORPUS = [
     ("data/blob_low.bin", "binary", lambda: make_binary(8002, 65536, "low")),
 ]
 
+# ---------------------------------------------------------------------------
+# Adversarial names and shapes
+# ---------------------------------------------------------------------------
+#
+# A recovery score measured against a flat directory of short ASCII names does
+# not tell you much. These entries target the specific places filesystem
+# parsers actually break:
+#
+#   * Deep nesting exercises directory-tree reconstruction -- NTFS rebuilds a
+#     path by following parent references through $FILE_NAME, and FAT/exFAT by
+#     recursive descent. Both go wrong at depth.
+#   * Non-ASCII names exercise UTF-16 decoding in three different encodings:
+#     NTFS $FILE_NAME, FAT long-filename entry chains (UCS-2 split across three
+#     disjoint field ranges per entry) and exFAT name entries (15 units each).
+#     The emoji entries matter most: they are surrogate pairs, so a parser that
+#     decodes UTF-16 one code unit at a time produces mojibake.
+#   * Names near the 255-character limit force the longest possible entry
+#     chains: 20 LFN entries on FAT (the maximum the format allows) and 17 name
+#     entries on exFAT. Off-by-one chain handling shows up here and nowhere
+#     else.
+#   * A file fragmented before deletion breaks the assumption FAT recovery
+#     leans on, because FAT zeroes the cluster chain on delete and contiguity
+#     is only a guess. See FRAGMENT_TARGET below.
+
+# Eight levels below the root.
+_DEEP = "deep/lvl1/lvl2/lvl3/lvl4/lvl5/lvl6/lvl7/lvl8"
+
+# 250 and 200 characters: just inside the 255-unit component limit that NTFS,
+# exFAT and FAT long names all share.
+_LONG_250 = ("long_" + "n" * 240 + "_end")[:250 - len(".txt")] + ".txt"
+_LONG_200 = ("wide_" + "w" * 190 + "_end")[:200 - len(".jpg")] + ".jpg"
+
+# The file the fixture generator deliberately fragments before deleting it.
+# A PNG because it is large enough to span several holes and carries per-chunk
+# CRCs, so Milestone 3 can validate the reassembly rather than just its length.
+FRAGMENT_TARGET = "photos/fragmented_photo.png"
+
+# Unicode paths are named constants rather than repeated literals, because a
+# string typed twice can differ in *normalisation form* while looking
+# identical: "é" is either U+00E9 (NFC) or "e" + U+0301 (NFD). Repeating these
+# literals silently desynchronised CORPUS from DELETED_SET once already.
+#
+# The two café entries are deliberately built in opposite forms, so the
+# fixtures genuinely test that names round-trip byte-exactly. NTFS, FAT and
+# exFAT all store the bytes they are given without normalising; a parser that
+# normalises on the way out would fail one of these two and pass the other.
+_CAFE_STEM = "café_niño_αβγ"
+PATH_CAFE_NFD = "unicode/" + unicodedata.normalize("NFD", _CAFE_STEM) + ".txt"
+PATH_CAFE_NFC = "unicode/" + unicodedata.normalize("NFC", _CAFE_STEM) + "_precomposed.txt"
+PATH_CJK = "unicode/日本語のファイル.jpg"
+PATH_CYRILLIC_GREEK = "unicode/Кириллица_Ωμέγα.png"
+PATH_EMOJI = "unicode/emoji_\U0001F389\U0001F525_test.txt"
+PATH_ARABIC = "unicode/ملف_عربي.txt"
+PATH_SPACES = "unicode/spaces and.dots.in.name .txt"
+PATH_DEEP_JPG = _DEEP + "/buried.jpg"
+
+ADVERSARIAL = [
+    # --- deep nesting ---
+    (PATH_DEEP_JPG, "jpeg", lambda: make_jpeg(160, 120, 1101)),
+    (_DEEP + "/buried.txt", "text", lambda: make_text(1102, 2048)),
+    ("deep/lvl1/lvl2/midway.txt", "text", lambda: make_text(1103, 1024)),
+
+    # --- non-ASCII, spanning several scripts and normalisation traps ---
+    # These use the module constants rather than repeating the literals: two
+    # spellings of the same name in different normalisation forms look
+    # identical in a diff but are different byte sequences, which silently
+    # desynchronised this list from DELETED_SET once already.
+    (PATH_CAFE_NFD, "text", lambda: make_text(1201, 1500)),   # decomposed
+    (PATH_CAFE_NFC, "text", lambda: make_text(1202, 1500)),   # precomposed
+    (PATH_CJK, "jpeg", lambda: make_jpeg(128, 96, 1203)),
+    (PATH_CYRILLIC_GREEK, "png", lambda: make_png(64, 48, 1204)),
+    # Emoji: surrogate pairs in UTF-16. A parser that treats code units as
+    # characters mangles these.
+    (PATH_EMOJI, "text", lambda: make_text(1205, 900)),
+    (PATH_ARABIC, "text", lambda: make_text(1206, 900)),      # RTL
+    (PATH_SPACES, "text", lambda: make_text(1207, 700)),      # space in the name
+
+    # --- long names ---
+    ("longnames/" + _LONG_250, "text", lambda: make_text(1301, 3000)),
+    ("longnames/" + _LONG_200, "jpeg", lambda: make_jpeg(96, 96, 1302)),
+
+    # --- the fragmentation target ---
+    (FRAGMENT_TARGET, "png", lambda: make_png(320, 240, 1401)),
+]
+
+CORPUS = CORPUS + ADVERSARIAL
+
+# The files build_fixtures.sh deletes from every basic filesystem fixture, and
+# therefore the set Milestone 2's >=95% name-accuracy bar is measured against.
+#
+# Defined here rather than in the shell script so the two cannot drift: a
+# 250-character name written out twice is a typo waiting to happen. The shell
+# reads this list via `make_corpus.py --deleted-set`.
+#
+# Deliberately weighted towards the hard cases. Recovering nine short ASCII
+# names in a flat directory would say nothing about whether the parsers work.
+DELETED_SET = [
+    # ordinary files, spanning container formats
+    "photos/img_0001.jpg",
+    "photos/img_0003.jpg",
+    "photos/nested/img_0004.jpg",
+    "photos/screenshot.png",
+    "docs/report.pdf",
+    "docs/letter.docx",
+    "video/clip_a.mp4",
+    "data/messages.sqlite",
+    "data/readme.txt",
+    # nine levels deep: exercises path reconstruction, which on NTFS means
+    # following parent references and on FAT/exFAT means recursive descent
+    PATH_DEEP_JPG,
+    # non-ASCII across scripts, including surrogate pairs and a decomposed
+    # form, all referenced by constant so they cannot drift from CORPUS
+    PATH_CJK,
+    PATH_EMOJI,
+    PATH_CAFE_NFD,
+    PATH_CYRILLIC_GREEK,
+    # 250 characters: 20 LFN entries on FAT, the format maximum
+    "longnames/" + _LONG_250,
+    # deliberately fragmented before deletion
+    FRAGMENT_TARGET,
+]
+
 
 # Larger payloads used only by the fragmented-* fixtures. Each file must be
 # comfortably bigger than the filler hole size (see build_fixtures.sh) so the
@@ -586,12 +709,45 @@ FRAG_CORPUS = [
 
 SETS = {"basic": CORPUS, "frag": FRAG_CORPUS}
 
+# Every deleted path must be a real corpus path. Without this a typo, or two
+# spellings of the same name in different Unicode normalisation forms, silently
+# shrinks the graded set and weakens the accuracy bar instead of failing.
+_CORPUS_PATHS = {p for p, _k, _b in CORPUS}
+_ORPHANS = [p for p in DELETED_SET if p not in _CORPUS_PATHS]
+if _ORPHANS:
+    raise SystemExit(
+        "DELETED_SET contains %d path(s) that are not in CORPUS: %r. "
+        "If a name looks identical to a corpus entry, compare their Unicode "
+        "normalisation forms -- NFC and NFD render the same but are different "
+        "byte sequences." % (len(_ORPHANS), _ORPHANS)
+    )
+if FRAGMENT_TARGET not in _CORPUS_PATHS:
+    raise SystemExit("FRAGMENT_TARGET %r is not in CORPUS" % FRAGMENT_TARGET)
+
+
+def _long_path(p):
+    """Make a path usable past Windows' 260-character MAX_PATH.
+
+    The corpus deliberately contains 250-character filenames, so a moderately
+    deep output directory pushes the full path over the limit. Windows accepts
+    longer paths only through the \\\\?\\ extended-length prefix, which also
+    requires a backslash-separated absolute path. No-op everywhere else.
+    """
+    if os.name != "nt":
+        return p
+    p = os.path.abspath(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    if p.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + p[2:]
+    return "\\\\?\\" + p.replace("/", "\\")
+
 
 def build(outdir, items):
     manifest = {}
     for relpath, kind, builder in items:
         data = builder()
-        dest = os.path.join(outdir, relpath)
+        dest = _long_path(os.path.join(outdir, relpath))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "wb") as fh:
             fh.write(data)
@@ -605,12 +761,32 @@ def build(outdir, items):
 
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
+    flags = [a for a in argv[1:] if a.startswith("--")]
+
+    # Queries used by build_fixtures.sh so the shell never restates these.
+    # Written as raw bytes on purpose. These paths are not ASCII, and
+    # sys.stdout's encoding follows the caller's locale -- cp1252 on a default
+    # Windows console, which cannot represent them and raises. Going through
+    # the buffer also avoids newline translation, so the shell reading this
+    # list never sees a stray CR in a filename.
+    if "--deleted-set" in flags:
+        for p in DELETED_SET:
+            sys.stdout.buffer.write(p.encode("utf-8") + b"\n")
+        return 0
+    if "--fragment-target" in flags:
+        sys.stdout.buffer.write(FRAGMENT_TARGET.encode("utf-8") + b"\n")
+        return 0
+
     which = "basic"
-    for a in argv[1:]:
+    for a in flags:
         if a.startswith("--set="):
             which = a.split("=", 1)[1]
     if len(args) != 1 or which not in SETS:
-        sys.stderr.write("usage: make_corpus.py [--set=basic|frag] OUTDIR\n")
+        sys.stderr.write(
+            "usage: make_corpus.py [--set=basic|frag] OUTDIR\n"
+            "       make_corpus.py --deleted-set\n"
+            "       make_corpus.py --fragment-target\n"
+        )
         return 2
     outdir = args[0]
     os.makedirs(outdir, exist_ok=True)
