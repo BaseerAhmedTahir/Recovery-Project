@@ -50,6 +50,15 @@ struct SmokeReport {
     range_sha256_before: String,
     range_sha256_after: String,
     unchanged: bool,
+    /// A read at an unaligned byte offset agreed with the aligned read of the
+    /// same range.
+    offset_consistent: bool,
+    /// The same LBA read into an aligned and a misaligned buffer produced
+    /// identical bytes. This is what exercises the bounce-buffer path.
+    buffer_alignment_consistent: bool,
+    /// False if the "misaligned" buffer happened to land aligned, meaning the
+    /// bounce path was not actually taken.
+    bounce_path_exercised: bool,
     elevated: bool,
 }
 
@@ -141,13 +150,45 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
     let unchanged = range_before == range_after;
 
     // A single-sector read must agree with the same bytes taken from a larger
-    // aligned read: that is what proves the alignment handling is correct
-    // rather than merely not crashing.
+    // aligned read: that is what proves the *offset* handling is correct rather
+    // than merely not crashing.
     let mut wide = vec![0u8; ss.as_usize() * 2];
     device.read_at(Lba(0), &mut wide)?;
     let mut narrow = vec![0u8; 100];
     device.read_bytes_at(ss.get() as u64 + 7, &mut narrow)?;
-    let alignment_consistent = narrow[..] == wide[ss.as_usize() + 7..ss.as_usize() + 107];
+    let offset_consistent = narrow[..] == wide[ss.as_usize() + 7..ss.as_usize() + 107];
+
+    // Read the SAME LBA into buffers with different *address* alignment.
+    //
+    // This is a distinct failure from the offset case above and the one the
+    // bounce-buffer path can actually produce. FILE_FLAG_NO_BUFFERING requires
+    // the destination address to be sector-aligned, so `read_at` reads through
+    // an aligned bounce buffer whenever the caller's buffer is not. If that
+    // path is wrong - a bad copy length, an off-by-one, a partial-read loop
+    // that restarts at the wrong place - the two reads disagree while each on
+    // its own looks entirely plausible. A single read cannot catch it.
+    let n = ss.as_usize() * 2;
+
+    // Aligned: an AlignedBuf is sector-aligned by construction, so this takes
+    // the direct path with no bounce.
+    let mut aligned = rc_device::AlignedBuf::new(n, ss.as_usize());
+    device.read_at(Lba(0), &mut aligned[..n])?;
+
+    // Deliberately misaligned: offsetting into a Vec by one byte gives an
+    // address that cannot be sector-aligned, forcing the bounce path.
+    let mut backing = vec![0u8; n + ss.as_usize()];
+    let skew = ss.as_usize() - (backing.as_ptr() as usize % ss.as_usize());
+    let skew = if skew % ss.as_usize() == 0 {
+        1
+    } else {
+        skew + 1
+    };
+    device.read_at(Lba(0), &mut backing[skew..skew + n])?;
+    let misaligned = &backing[skew..skew + n];
+
+    let bounce_took_effect = (misaligned.as_ptr() as usize) % ss.as_usize() != 0;
+    let alignment_consistent =
+        offset_consistent && aligned[..n] == misaligned[..] && aligned[..n] == wide[..n];
 
     if json {
         print_json(&SmokeReport {
@@ -158,6 +199,9 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
             range_sha256_before: range_before,
             range_sha256_after: range_after,
             unchanged,
+            offset_consistent,
+            buffer_alignment_consistent: aligned[..n] == misaligned[..],
+            bounce_path_exercised: bounce_took_effect,
             elevated: rc_device::is_elevated(),
         })?;
     } else {
@@ -169,8 +213,21 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
             if unchanged { "yes" } else { "NO" }
         );
         println!(
-            "unaligned matches aligned:   {}",
-            if alignment_consistent { "yes" } else { "NO" }
+            "unaligned offset matches:    {}",
+            if offset_consistent { "yes" } else { "NO" }
+        );
+        println!(
+            "misaligned buffer matches:   {}   (bounce path exercised: {})",
+            if aligned[..n] == misaligned[..] {
+                "yes"
+            } else {
+                "NO"
+            },
+            if bounce_took_effect {
+                "yes"
+            } else {
+                "no - buffer happened to be aligned"
+            }
         );
     }
 

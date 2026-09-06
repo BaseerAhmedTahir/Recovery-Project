@@ -299,25 +299,86 @@ four); the other three filesystems succeed on the first. That difference is
 itself worth knowing: ntfs-3g is markedly better at finding contiguous free
 space than vfat, exfat-fuse or ext4.
 
+### The corpus is a single sample, however large it gets
+
+111/111 is a stronger result than 16/16, but it does not address correlated
+error. Every one of those 315 files was written by one script through one
+`mkfs`/`ntfs-3g` path. If there is a systematic blind spot - an
+`$ATTRIBUTE_LIST` layout, an index-allocation pattern or a resident-attribute
+threshold that Microsoft's NTFS driver produces and `ntfs-3g` never does - this
+corpus cannot surface it at any size, because the sample is not independent.
+
+Native Windows builds now work, so an independent sample is available for the
+first time: create a VHD, format and populate it with **Microsoft's own NTFS
+driver**, delete a subset, and parse the result. Any disagreement between that
+fixture and the `ntfs-3g`-built one is a genuine finding about the parser.
+
+Both steps need Administrator (creating and attaching a VHD is privileged), so
+this is queued alongside the smoke test rather than done automatically.
+
+### Validator requirements worth writing down before implementing
+
+Two formats where a header match is actively misleading:
+
+- **SQLite.** `SQLite format 3` followed by a NUL byte is sixteen bytes of literal ASCII, so it
+  matches any text file that happens to contain the string - documentation
+  about SQLite, a hex dump, a source file. The validator must read the header
+  fields back: page size a power of two in 512..65536, page count consistent
+  with the candidate's length, and a freelist page count that does not exceed
+  the page count.
+- **MP4.** A `ftyp` box with an implausible size field is a common false
+  positive out of compressed data, where four arbitrary bytes precede the
+  literal `ftyp`. The box size must be bounded before any atom walking begins,
+  or the walk chases a garbage length into the rest of the volume.
+
 ### Throughput and RSS, given what this machine can actually measure
 
 Native Windows builds now work, which changes both answers.
 
-**Throughput** should be measured natively on Windows against a real drive,
-not under WSL. Every read from `/mnt/d` crosses the drvfs bridge at roughly
-20 MiB/s regardless of file size, so no fixture built there can produce a
-device throughput number - the bottleneck is the bridge, not the page cache
-and not the scanner. Measuring on the actual target platform is both cheaper
-and more meaningful than building a multi-gigabyte fixture inside WSL.
+**Throughput** should be measured natively on Windows, not under WSL. Every
+read from `/mnt/d` crosses the drvfs bridge at roughly 20 MiB/s regardless of
+file size, so no fixture built there can produce a device throughput number -
+the bottleneck is the bridge, not the page cache and not the scanner.
+
+But native is not automatically honest either. Reading a fixture file through
+NTFS still has the page cache in front of it, so a figure taken that way
+measures the cache, not a device. Three ways to report a number, in descending
+order of what it is worth:
+
+1. **A real device.** Scan a physical drive once the smoke test has proved the
+   raw read path works. This is the only true device number and it is what the
+   benchmark should ultimately quote.
+2. **A file read with `FILE_FLAG_NO_BUFFERING`,** which bypasses the cache. The
+   imaging path already opens devices this way; the benchmark can open its
+   fixture the same way. Closer to a device number, still mediated by the
+   filesystem.
+3. **A cached file read,** which is what a naive `cargo bench` against a
+   512 MiB fixture produces. Useful only for detecting regressions in the
+   scanner's own CPU cost, and it must be **labelled cache-bound** wherever it
+   is reported.
+
+Anything reported must say which of the three it is. A cache-bound figure
+recorded as a device throughput number would be worse than reporting nothing.
 
 **Peak RSS** is graded two ways, because the literal criterion is not testable
 here. This host has 7.8 GB of RAM and WSL is capped at 2.9 GB, so a "< 2 GB"
 assertion could only fail by OOM, and passing it against a 512 MiB fixture
 would prove nothing about whether the index is disk-backed. So the benchmark
 reports peak RSS (satisfying the letter of SPEC.md section 5.8) *and*
-asserts the property that actually matters: that RSS stays roughly flat as the
-candidate count grows tenfold. A design that held candidates in RAM fails the
-second test on any fixture size.
+asserts the property that actually matters: that memory use grows sublinearly
+in the candidate count.
+
+The pass condition is stated as a ratio, not as "flat", because a disk-backed
+index is not flat: SQLite keeps a page cache, a write-ahead log and its own
+buffers, all of which grow somewhat. Asserting flatness would produce failures
+that are technically correct and operationally meaningless.
+
+> **Pass condition.** Growing the candidate count by 10x must grow peak RSS by
+> no more than 2x, measured after the index has been flushed. An in-RAM index
+> grows about 10x and fails clearly; a disk-backed one grows by well under 2x
+> and passes with margin. The ratio is deliberately loose enough that ordinary
+> cache and WAL growth cannot trip it, and tight enough that storing candidates
+> in memory cannot pass.
 
 ---
 
