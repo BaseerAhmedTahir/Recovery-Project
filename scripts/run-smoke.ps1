@@ -56,7 +56,13 @@ if (-not (Test-Path $rc)) {
     $env:CARGO_HOME  = 'D:\Rust\cargo'
     $env:PATH        = "D:\Rust\cargo\bin;$env:PATH"
     cargo build -p rc-cli
+    # $ErrorActionPreference = 'Stop' does not apply to a native command's exit
+    # code (see the same note in make-windows-fixture.ps1). The Test-Path below
+    # would catch a first-ever build failure, but not a failed rebuild over an
+    # existing rc.exe - that would silently smoke-test a stale binary.
+    $buildExit = $LASTEXITCODE
     Pop-Location
+    if ($buildExit -ne 0) { Fail "cargo build failed with exit code $buildExit" }
 }
 if (-not (Test-Path $rc)) { Fail "rc.exe not found at $rc" }
 

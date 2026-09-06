@@ -44,6 +44,23 @@ function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 # failed. The \\?\ extended-length prefix lifts the limit, and the .NET file
 # APIs honour it reliably where the PowerShell cmdlets do not - so every file
 # operation below goes through .NET rather than through Copy-Item/Remove-Item.
+# $ErrorActionPreference = 'Stop' does NOT apply to a native executable's exit
+# code. diskpart, python and cargo can all fail while the script sails on to
+# the next line - which is how this script once printed "Done:" after failing
+# to write any ground truth at all. PowerShell 7.3 added
+# $PSNativeCommandUseErrorActionPreference for exactly this; Windows PowerShell
+# 5.1, which is what runs here, has no such setting. So every native call in
+# this file is followed by an explicit check, and the ones whose output is not
+# captured go through this helper.
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Command,
+        [Parameter(Mandatory)][string]$What
+    )
+    & $Command | Out-String | Write-Verbose
+    if ($LASTEXITCODE -ne 0) { Fail "$What failed with exit code $LASTEXITCODE" }
+}
+
 function Ext([string]$p) {
     $full = [System.IO.Path]::GetFullPath($p)
     if ($full.StartsWith('\\?\')) { return $full }
@@ -123,7 +140,12 @@ if ($LASTEXITCODE -ne 0) { Fail "corpus generation failed" }
 [System.IO.File]::WriteAllLines($manifest, [string[]]$manifestLines,
                                 (New-Object System.Text.UTF8Encoding $false))
 $deleted = @(& $py $corpusPy --deleted-set)
+if ($LASTEXITCODE -ne 0) { Fail "reading the deleted set failed" }
 try { [Console]::OutputEncoding = $prevOutEnc } catch {}
+# An empty set would sail through every check below - nothing to delete means
+# nothing can mismatch - and produce a fixture whose ground truth says no file
+# was ever deleted. Refuse it rather than build a useless fixture quietly.
+if ($deleted.Count -eq 0) { Fail "the deleted set is empty; the fixture would have nothing deleted in it" }
 
 # Every name we intend to delete must appear verbatim among the names the
 # generator says it wrote. If the two disagree, an encoding boundary corrupted
@@ -152,7 +174,7 @@ create partition primary
 format fs=ntfs quick label=RCWINNTFS
 assign letter=$Letter
 "@ | Set-Content -Path $dp -Encoding ascii
-diskpart /s $dp | Out-String | Write-Verbose
+Invoke-Native { diskpart /s $dp } "creating and attaching the VHD"
 if (-not (Test-Path "${Letter}:\")) { Fail "VHD did not mount at ${Letter}:" }
 Write-Host "    mounted at ${Letter}: and formatted NTFS by the Windows driver"
 
@@ -227,6 +249,30 @@ select vdisk file="$vhd"
 detach vdisk
 "@ | Set-Content -Path $dp2 -Encoding ascii
     diskpart /s $dp2 | Out-String | Write-Verbose
+    $detachExit = $LASTEXITCODE
+
+    # Check the post-condition, not only the exit code. The next step truncates
+    # the VHD's 512-byte footer, and doing that to a still-attached virtual disk
+    # corrupts it. This runs in a finally block, so it records the outcome for
+    # the caller to act on rather than throwing and masking whatever sent us
+    # here.
+    $stillMounted = Test-Path "${Letter}:\"
+    $detached = ($detachExit -eq 0 -and -not $stillMounted)
+    if (-not $detached) {
+        Write-Host "    WARNING: detach did not complete (exit $detachExit, volume still present: $stillMounted)" -ForegroundColor Yellow
+    }
+}
+
+if (-not $detached) {
+    Fail @"
+The VHD is still attached, so its footer will not be trimmed: truncating a
+mounted virtual disk corrupts it.
+
+Detach it by hand before re-running:
+  diskpart
+  select vdisk file="$vhd"
+  detach vdisk
+"@
 }
 
 # --- 6. present it as a plain image ---------------------------------------
