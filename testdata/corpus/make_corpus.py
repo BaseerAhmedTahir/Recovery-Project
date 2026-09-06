@@ -647,9 +647,16 @@ ADVERSARIAL = [
     (PATH_CYRILLIC_GREEK, "png", lambda: make_png(64, 48, 1204)),
     # Emoji: surrogate pairs in UTF-16. A parser that treats code units as
     # characters mangles these.
-    (PATH_EMOJI, "text", lambda: make_text(1205, 900)),
-    (PATH_ARABIC, "text", lambda: make_text(1206, 900)),      # RTL
-    (PATH_SPACES, "text", lambda: make_text(1207, 700)),      # space in the name
+    # Sized above the ~700-byte NTFS resident-attribute threshold, because a
+    # resident file has no clusters on disk and therefore nothing to carve.
+    # This one is in the deleted set and must be gradeable in Milestone 3.
+    (PATH_EMOJI, "text", lambda: make_text(1205, 6000)),
+    (PATH_ARABIC, "text", lambda: make_text(1206, 6000)),     # RTL
+    # Deliberately left small: a file that NTFS stores resident is a real case
+    # worth having. Its content is recoverable straight from the MFT record and
+    # is invisible to a signature carver, which is correct behaviour, not a
+    # miss. Not in the deleted set, so it never inflates a carving score.
+    (PATH_SPACES, "text", lambda: make_text(1207, 700)),
 
     # --- long names ---
     ("longnames/" + _LONG_250, "text", lambda: make_text(1301, 3000)),
@@ -659,7 +666,81 @@ ADVERSARIAL = [
     (FRAGMENT_TARGET, "png", lambda: make_png(320, 240, 1401)),
 ]
 
-CORPUS = CORPUS + ADVERSARIAL
+# ---------------------------------------------------------------------------
+# Bulk corpus
+# ---------------------------------------------------------------------------
+#
+# Milestone 2 graded 16 deleted files. That is a small sample of one on-disk
+# layout, so "100% accuracy" said as much about the fixture as about the
+# parsers. Signature carving in Milestone 3 needs a far larger population for a
+# different reason: a carver is graded on *precision* as well as recall, and
+# precision is only meaningful when there are enough non-target files on the
+# volume to be wrong about.
+#
+# So the corpus is padded to a few hundred files spanning every format the
+# carver claims to handle. Sizes are kept small but above the ~700-byte NTFS
+# resident-attribute threshold, so every file genuinely occupies clusters and
+# is therefore carvable; a resident file has no content on disk to find.
+#
+# Generation cost is the binding constraint. The JPEG encoder is pure Python,
+# so JPEGs are the smallest dimension that still exercises multiple MCU rows
+# and restart markers, and the bulk of the count comes from cheaper formats.
+
+BULK_COUNTS = {
+    "jpeg": 40,
+    "png": 45,
+    "pdf": 45,
+    "docx": 40,
+    "mp4": 25,
+    "sqlite": 15,
+    "text": 45,
+    "binary": 30,
+}
+
+
+def _bulk_corpus():
+    """Generate the bulk file list. Seeds are derived from the index so the
+    whole corpus stays reproducible."""
+    out = []
+    for i in range(BULK_COUNTS["jpeg"]):
+        s = 20000 + i
+        out.append((f"bulk/img/photo_{i:04d}.jpg", "jpeg",
+                    lambda s=s: make_jpeg(128, 96, s)))
+    for i in range(BULK_COUNTS["png"]):
+        s = 21000 + i
+        out.append((f"bulk/img/render_{i:04d}.png", "png",
+                    lambda s=s: make_png(96, 72, s)))
+    for i in range(BULK_COUNTS["pdf"]):
+        s = 22000 + i
+        out.append((f"bulk/docs/doc_{i:04d}.pdf", "pdf",
+                    lambda s=s: make_pdf(s, pages=6)))
+    for i in range(BULK_COUNTS["docx"]):
+        s = 23000 + i
+        out.append((f"bulk/docs/memo_{i:04d}.docx", "docx",
+                    lambda s=s: make_docx(s, paragraphs=45)))
+    for i in range(BULK_COUNTS["mp4"]):
+        s = 24000 + i
+        out.append((f"bulk/video/clip_{i:04d}.mp4", "mp4",
+                    lambda s=s: make_mp4(s, chunks=8)))
+    for i in range(BULK_COUNTS["sqlite"]):
+        s = 25000 + i
+        out.append((f"bulk/data/db_{i:04d}.sqlite", "sqlite",
+                    lambda s=s: make_sqlite(s, rows=120)))
+    for i in range(BULK_COUNTS["text"]):
+        s = 26000 + i
+        out.append((f"bulk/text/notes_{i:04d}.txt", "text",
+                    lambda s=s: make_text(s, 9000)))
+    for i in range(BULK_COUNTS["binary"]):
+        s = 27000 + i
+        kind = "low" if i % 3 == 0 else "high"
+        out.append((f"bulk/blob/blob_{i:04d}.bin", "binary",
+                    lambda s=s, k=kind: make_binary(s, 16384, k)))
+    return out
+
+
+BULK = _bulk_corpus()
+
+CORPUS = CORPUS + ADVERSARIAL + BULK
 
 # The files build_fixtures.sh deletes from every basic filesystem fixture, and
 # therefore the set Milestone 2's >=95% name-accuracy bar is measured against.
@@ -695,6 +776,18 @@ DELETED_SET = [
     # deliberately fragmented before deletion
     FRAGMENT_TARGET,
 ]
+
+# Delete a deterministic slice of the bulk corpus as well.
+#
+# Two reasons. A sample of 16 is too small for an accuracy figure to describe
+# the parsers rather than this particular layout. And a carver is graded on
+# precision, which needs a large population of files that are *not* targets:
+# every bulk file left in place is a distractor that must not show up in
+# deleted-only output.
+#
+# Every third file is taken, which spreads the deletions across all formats and
+# across the directory rather than clustering them.
+DELETED_SET += [p for i, (p, _k, _b) in enumerate(BULK) if i % 3 == 0]
 
 
 # Larger payloads used only by the fragmented-* fixtures. Each file must be

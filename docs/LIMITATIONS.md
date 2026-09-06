@@ -9,38 +9,66 @@ Last updated: 2026-09-05 (end of Milestone 1).
 
 ## 1. Verification status of the code itself
 
-### 1.1 The Windows unbuffered read path is UNVERIFIED
+### 1.1 The Windows sector-read path is still unverified; the rest of the backend now is
 
-**This is the most important caveat in this document right now.**
+**Updated 2026-09-06.** The MSVC toolchain is installed, so the Windows backend
+now compiles and most of it has been executed against real hardware.
 
-`crates/rc-device/src/backend/windows.rs` implements raw device reads with
-`CreateFileW` + `FILE_FLAG_NO_BUFFERING`. It has **never been executed**. It is
-not even compile-checked, because this machine has no MSVC linker installed
-(see section 2.1).
+Compiling it for the first time found three genuine bugs that review had not
+caught: a wrong `ReadFile` buffer type, a borrow error in the bounce-buffer
+path, and an IOCTL constant that windows-sys does not export. That is the
+argument for compiling unverified code early, rather than trusting that it
+looks right.
 
-Everything that *is* verified was verified against file-backed fixture images
-through `backend/file.rs`, which uses ordinary buffered positional reads. That
-path never exercises:
+**Verified against real hardware, unelevated:**
 
-- sector-size alignment of the destination buffer address,
-- alignment of the transfer length and file offset,
-- `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX` / `IOCTL_STORAGE_QUERY_PROPERTY` decoding,
-- the `OVERLAPPED` offset plumbing in `ReadFile`,
-- elevation detection.
+- `CreateFileW` with zero access rights, and the metadata IOCTLs behind it:
+  `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`, `IOCTL_STORAGE_QUERY_PROPERTY` for model
+  and serial, the seek-penalty descriptor and the TRIM descriptor. `rc devices`
+  correctly identifies this machine's NVMe as an SSD reporting TRIM.
+- Elevation detection, and the honest "requires Administrator to read sector
+  data" reporting that depends on it.
+- Destination resolution (SPEC.md section 4.2): `GetVolumePathNameW` to a
+  volume GUID to `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` resolved `D:` to
+  `\\.\PhysicalDrive0`, matching Windows' own `Get-Partition` answer.
+- The `rc smoke` guards: refused without the opt-in variable, and refused the
+  system drive.
+- The full 196-test suite, run natively on Windows.
 
-Until `rc smoke --device <a throwaway USB stick>` has been run successfully on
-real hardware, **treat the Windows raw-device path as untested code**. This is
-a hard gate on Milestone 8: the GUI does not start until it has been run (see
-`docs/PROGRESS.md`). Use the
-image-file path (`rc image /path/to/disk.img ...`) for anything that matters.
+**Still unverified: the sector read itself.** `read_unbuffered`, and everything
+`FILE_FLAG_NO_BUFFERING` implies - destination-address alignment, transfer
+length alignment, and the `OVERLAPPED` offset plumbing - has never executed,
+because reading raw sectors needs Administrator rights and a device that is
+safe to read. Until it has run, treat that one function as untested code.
 
-To clear this caveat:
+This remains a hard gate on Milestone 8 (see `docs/PROGRESS.md`).
 
-```bash
-RC_SMOKE_ALLOW=1 rc smoke --device \\.\PhysicalDrive2
+To clear it, from an **Administrator** PowerShell with a throwaway USB stick or
+SD card plugged in:
+
+```powershell
+.\target\debug\rc.exe devices          # find the stick's PhysicalDriveN
+$env:RC_SMOKE_ALLOW = "1"
+.\target\debug\rc.exe smoke --device \\.\PhysicalDriveN
 ```
 
-and record the result here.
+It reads a handful of sectors including a deliberately 4K-unaligned offset,
+checks the unaligned read agrees with the aligned read of the same bytes, and
+asserts the range hashes identically on a second read. Then record the result
+here.
+
+### 1.1a On this machine, C: and D: are the same physical disk
+
+`Get-Partition` and `rc-image::resolve` agree that both live on
+`\\.\PhysicalDrive0`, a Kingston SKC3000S1024G. Two consequences:
+
+- A real recovery scan of `\\.\PhysicalDrive0` **cannot** write its output
+  anywhere on C: or D:. `OutputSink` will refuse, and that refusal is correct.
+  An external destination is required for any recovery of the internal drive.
+- That NVMe reports TRIM, so per SPEC.md section 1.1 recovery from it is poor
+  to impossible regardless of tooling. `rc devices` says so in its output
+  rather than leaving it to be discovered mid-recovery.
+
 
 ### 1.2 The macOS backend is unverified and uncompiled
 
@@ -63,29 +91,23 @@ same `rc smoke` opt-in as the Windows path.
 
 ## 2. Toolchain and environment limitations on this machine
 
-### 2.1 No MSVC linker: nothing can be built or tested natively on Windows
+### 2.1 Native Windows builds now work (resolved 2026-09-06)
 
-`rustc` and `cargo` 1.98.1 are installed (`D:\Rust\`), but the Visual Studio C++
-build tools are not, so there is no `link.exe`. Consequences:
+VS Build Tools 2022 is installed at `D:\VS\BuildTools` with the Windows SDK
+at `10.0.26100.0`, so `cargo build`/`test` run natively. The full suite passes
+on Windows.
 
-- `cargo build`, `cargo test` and even `cargo check` fail on Windows, because
-  build scripts and proc macros must be linked in order to run.
-- All verification so far was done **inside WSL2**, targeting Linux.
-
-Note also that MSYS2 ships a `link` command (GNU coreutils) which cargo will
+One trap remains: MSYS2 ships a `link` command (GNU coreutils) that cargo will
 pick up and mistake for MSVC's `link.exe`, producing a confusing
-`extra operand` error. Keep the MSVC toolchain ahead of MSYS on `PATH`.
+`extra operand` error. **Build from PowerShell, not from the MSYS bash shell**,
+or keep the MSVC toolchain ahead of MSYS on `PATH`.
 
-### 2.2 The C: drive is effectively full
+### 2.2 The C: drive was full; it is not any more (resolved 2026-09-06)
 
-C: had ~570 MB free at the start of Milestone 1 and ~250 MB after installing a
-C compiler into WSL. This is a hard blocker for installing the Visual Studio
-build tools, which stage several GB on C: even when the install target is on
-another drive. **Free space on C: before attempting that install.**
-
-Everything this project controls has been kept off C:: `RUSTUP_HOME`,
-`CARGO_HOME`, the build target directory, the WSL toolchain and all fixtures
-live on D:.
+C: fell to ~250 MB free during Milestone 1, which blocked the toolchain
+install. It now has ~14 GB. `RUSTUP_HOME`, `CARGO_HOME`, the build target
+directory, the WSL toolchain and all fixtures still live on D:, and should
+stay there.
 
 ### 2.3 exFAT needs a FUSE driver under WSL2
 

@@ -2,9 +2,17 @@
 
 Running status per SPEC.md section 9. Last updated 2026-09-06.
 
-**Current state: Milestones 1 and 2 complete on the Linux/image-file path.**
-The Windows raw-device backend is still unexecuted and is now a hard gate on
-Milestone 8; see below.
+**Current state: Milestones 1 and 2 complete. Milestone 3 in progress.**
+
+The toolchain blocker is resolved: C: was freed, VS Build Tools 2022 is
+installed, and the workspace now builds and passes all 196 tests **natively on
+Windows** as well as under WSL. Compiling the Windows backend for the first
+time found three real bugs (a wrong `ReadFile` buffer type, a borrow error in
+the bounce-buffer path, and an unexported IOCTL constant).
+
+Most of the Windows backend is now verified against real hardware. The one
+remaining gap is the sector read itself, which needs Administrator rights and a
+throwaway device; `docs/LIMITATIONS.md` section 1.1 has the exact command.
 
 ---
 
@@ -93,7 +101,7 @@ Milestone 4's job.
 | Matching SHA-256 | done | Clone is byte-identical; streaming digest agrees with re-read |
 | Source hash unchanged | done | Asserted in both crates' test suites |
 | `rc-cli devices/image/verify` | done | Plus `smoke` |
-| **Enumerate real drives** | **done on Linux** | `rc devices` lists real block devices unelevated, with honest access + TRIM reporting. Windows/macOS backends written but unexecuted |
+| **Enumerate real drives** | **done, Linux and Windows** | `rc devices` lists real drives unelevated on both, with honest access and TRIM reporting. macOS remains uncompiled |
 
 End-to-end acceptance was also demonstrated through the CLI itself, not only
 through the test suite: `rc image` cloned the 512 MiB `fat32-basic` fixture and
@@ -204,26 +212,21 @@ fragmentation?
 
 ---
 
-## Gate: the Windows backend must be verified before Milestone 8
+## Gate: the Windows sector-read path before Milestone 8
 
-**Decided 2026-09-05.** Windows is the daily driver here *and* the primary
-target, but it cannot currently compile (no MSVC linker, C: full), so the
-Windows raw-device backend is accumulating unverified code behind the
-Linux/image-file path.
+**Decided 2026-09-05, mostly discharged 2026-09-06.**
 
-The agreed handling:
+The toolchain now builds natively, and enumeration, destination resolution,
+elevation detection and the smoke-test guards have all been executed against
+real hardware. Compiling the previously-unbuildable backend immediately found
+three real bugs, which is the argument for closing this kind of gap early
+rather than at Milestone 8.
 
-1. **Run `rc smoke` against a spare USB stick as soon as the toolchain builds.**
-   This is the cheap action and it clears the largest caveat in
-   `docs/LIMITATIONS.md`.
-2. **Hard gate: Milestone 8 (the Tauri GUI) does not start until the Windows
-   raw-device read path has been executed against real hardware.** Building a
-   GUI on top of an unexecuted device layer would mean discovering backend bugs
-   through a UI, which is the worst place to find them.
-
-Milestones 2 through 7 may proceed on the Linux/image path in the meantime,
-because every one of them is graded against fixture images rather than against
-a physical device.
+**What remains gated:** the raw sector read (`read_unbuffered`,
+`FILE_FLAG_NO_BUFFERING`, `OVERLAPPED` offsets, buffer alignment) has still
+never executed. Milestone 8 does not start until `rc smoke` has run against a
+throwaway USB stick from an Administrator shell. The command is in
+`docs/LIMITATIONS.md` section 1.1 and takes about ten seconds.
 
 ---
 

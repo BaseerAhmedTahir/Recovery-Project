@@ -161,8 +161,14 @@ mod windows_impl {
         use windows_sys::Win32::Storage::FileSystem::{
             CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         };
-        use windows_sys::Win32::System::Ioctl::IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS;
         use windows_sys::Win32::System::IO::DeviceIoControl;
+
+        // Not exported by windows-sys 0.59, and a frozen Win32 ABI value, so
+        // it is derived here rather than depending on a particular version's
+        // module layout:
+        //   CTL_CODE(IOCTL_VOLUME_BASE=0x56, 0, METHOD_BUFFERED=0, FILE_ANY_ACCESS=0)
+        //   = (0x56 << 16) | (0 << 14) | (0 << 2) | 0
+        const IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: u32 = 0x0056_0000;
 
         // The IOCTL wants the volume name without its trailing backslash.
         let trimmed = volume.trim_end_matches('\\');

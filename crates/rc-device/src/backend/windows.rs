@@ -183,7 +183,7 @@ fn probe(path: &str, kind: DeviceKind) -> Option<DeviceInfo> {
     // SAFETY: DISK_GEOMETRY_EX is POD and the IOCTL fills it in.
     let geom: DISK_GEOMETRY_EX = unsafe { ioctl_out(h.0, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, None) }?;
     let sector_size = SectorSize::new(geom.Geometry.BytesPerSector).ok()?;
-    let total_bytes = unsafe { geom.DiskSize as u64 };
+    let total_bytes = geom.DiskSize as u64;
     let total_sectors = total_bytes / sector_size.get() as u64;
     if total_sectors == 0 {
         return None;
@@ -376,45 +376,65 @@ impl ReadOnlyDevice for WindowsDevice {
     }
 
     fn read_at(&self, lba: Lba, buf: &mut [u8]) -> Result<usize> {
-        use windows_sys::Win32::Storage::FileSystem::ReadFile;
-        use windows_sys::Win32::System::IO::OVERLAPPED;
-
         let want = validate_read(&self.info, lba, buf)?;
         let offset = lba.byte_offset(self.info.sector_size);
         let ss = self.info.sector_size;
 
-        // FILE_FLAG_NO_BUFFERING requires an aligned destination address. A
-        // caller-supplied &mut [u8] carries no such guarantee, so read into an
-        // aligned bounce buffer whenever the caller's is not suitable.
-        let needs_bounce = (buf.as_ptr() as usize) % ss.as_usize() != 0;
-        let mut bounce;
-        let dst: &mut [u8] = if needs_bounce {
-            bounce = AlignedBuf::new(want, ss.as_usize());
-            &mut bounce[..want]
+        // FILE_FLAG_NO_BUFFERING requires the destination *address* to be
+        // sector-aligned, not just its length. A caller-supplied &mut [u8]
+        // carries no such guarantee, so an unaligned buffer is read through an
+        // aligned bounce buffer and copied out afterwards.
+        //
+        // The two cases are separate branches rather than a shared `dst`
+        // binding so the borrows stay disjoint: copying out of a bounce buffer
+        // while still holding a mutable borrow of `buf` does not compile.
+        if (buf.as_ptr() as usize) % ss.as_usize() == 0 {
+            self.read_unbuffered(&mut buf[..want], offset, lba)
         } else {
-            &mut buf[..want]
-        };
+            let mut bounce = AlignedBuf::new(want, ss.as_usize());
+            let done = self.read_unbuffered(&mut bounce[..want], offset, lba)?;
+            buf[..done].copy_from_slice(&bounce[..done]);
+            Ok(done)
+        }
+    }
+}
 
+impl WindowsDevice {
+    /// Issue positional `ReadFile` calls until `dst` is full or the device
+    /// stops returning data.
+    ///
+    /// `dst` must already satisfy the alignment `FILE_FLAG_NO_BUFFERING`
+    /// demands; [`ReadOnlyDevice::read_at`] is what guarantees that.
+    fn read_unbuffered(&self, dst: &mut [u8], offset: u64, lba: Lba) -> Result<usize> {
+        use windows_sys::Win32::Storage::FileSystem::ReadFile;
+        use windows_sys::Win32::System::IO::OVERLAPPED;
+
+        let ss = self.info.sector_size;
+        let want = dst.len();
         let mut done = 0usize;
+
         while done < want {
+            // The offset travels in the OVERLAPPED rather than a file pointer,
+            // so a single handle can be shared across scanner threads.
             let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
             let at = offset + done as u64;
             ov.Anonymous.Anonymous.Offset = (at & 0xFFFF_FFFF) as u32;
             ov.Anonymous.Anonymous.OffsetHigh = (at >> 32) as u32;
 
             let mut read = 0u32;
-            // SAFETY: handle is a live read-only device handle; dst is a live
-            // buffer of at least (want - done) bytes at the given offset.
+            // SAFETY: the handle is a live read-only device handle, and
+            // dst[done..] is a live buffer of exactly (want - done) bytes.
             let ok = unsafe {
                 ReadFile(
                     self.handle.0,
-                    dst[done..].as_mut_ptr() as *mut c_void,
+                    dst[done..].as_mut_ptr(),
                     (want - done) as u32,
                     &mut read,
                     &mut ov,
                 )
             };
             if ok == 0 {
+                // SAFETY: read immediately after the failing call on this thread.
                 let code = unsafe { GetLastError() };
                 if code == ERROR_INVALID_FUNCTION {
                     return Err(DeviceError::Unsupported {
@@ -429,13 +449,9 @@ impl ReadOnlyDevice for WindowsDevice {
                 });
             }
             if read == 0 {
-                break;
+                break; // end of device
             }
             done += read as usize;
-        }
-
-        if needs_bounce {
-            buf[..done].copy_from_slice(&dst[..done]);
         }
         Ok(done)
     }
