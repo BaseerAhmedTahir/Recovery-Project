@@ -9,53 +9,53 @@ Last updated: 2026-09-05 (end of Milestone 1).
 
 ## 1. Verification status of the code itself
 
-### 1.1 The Windows sector-read path is still unverified; the rest of the backend now is
+### 1.1 The Windows raw-device path is VERIFIED (cleared 2026-09-06)
 
-**Updated 2026-09-06.** The MSVC toolchain is installed, so the Windows backend
-now compiles and most of it has been executed against real hardware.
+The MSVC toolchain is installed, the workspace builds and tests natively on
+Windows, and `rc smoke` has now been run against a physical device.
 
-Compiling it for the first time found three genuine bugs that review had not
-caught: a wrong `ReadFile` buffer type, a borrow error in the bounce-buffer
-path, and an IOCTL constant that windows-sys does not export. That is the
-argument for compiling unverified code early, rather than trusting that it
-looks right.
+Compiling the backend for the first time found three genuine bugs that review
+had not caught: a wrong `ReadFile` buffer type, a borrow error in the
+bounce-buffer path, and an IOCTL constant windows-sys does not export. That is
+the argument for compiling unverified code as soon as it is possible rather
+than trusting that it looks right.
 
-**Verified against real hardware, unelevated:**
+**Smoke test result, 2026-09-06**, against `\.\PhysicalDrive3`
+(Generic Flash Disk USB Device, 29.3 GB, 61,440,000 sectors of 512 bytes):
 
-- `CreateFileW` with zero access rights, and the metadata IOCTLs behind it:
-  `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`, `IOCTL_STORAGE_QUERY_PROPERTY` for model
-  and serial, the seek-penalty descriptor and the TRIM descriptor. `rc devices`
-  correctly identifies this machine's NVMe as an SSD reporting TRIM.
-- Elevation detection, and the honest "requires Administrator to read sector
-  data" reporting that depends on it.
-- Destination resolution (SPEC.md section 4.2): `GetVolumePathNameW` to a
-  volume GUID to `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` resolved `D:` to
-  `\\.\PhysicalDrive0`, matching Windows' own `Get-Partition` answer.
-- The `rc smoke` guards: refused without the opt-in variable, and refused the
-  system drive.
-- The full 196-test suite, run natively on Windows.
+```
+  LBA 0 (aligned)            offset            0  read  4096 of  4096 bytes
+  4K-unaligned byte offset   offset          515  read  1000 of  1000 bytes
+  mid-device (aligned)       offset  15728640000  read   512 of   512 bytes
 
-**Still unverified: the sector read itself.** `read_unbuffered`, and everything
-`FILE_FLAG_NO_BUFFERING` implies - destination-address alignment, transfer
-length alignment, and the `OVERLAPPED` offset plumbing - has never executed,
-because reading raw sectors needs Administrator rights and a device that is
-safe to read. Until it has run, treat that one function as untested code.
+range sha256 (1st read): c0d1cbb45add425c1f5fc88e9f86d1ab094494ae81d635a275b0d37fc034017c
+range sha256 (2nd read): c0d1cbb45add425c1f5fc88e9f86d1ab094494ae81d635a275b0d37fc034017c
 
-This remains a hard gate on Milestone 8 (see `docs/PROGRESS.md`).
-
-To clear it, from an **Administrator** PowerShell with a throwaway USB stick or
-SD card plugged in:
-
-```powershell
-.\target\debug\rc.exe devices          # find the stick's PhysicalDriveN
-$env:RC_SMOKE_ALLOW = "1"
-.\target\debug\rc.exe smoke --device \\.\PhysicalDriveN
+unchanged across reads:      yes
+unaligned offset matches:    yes
+misaligned buffer matches:   yes   (bounce path exercised: yes)
 ```
 
-It reads a handful of sectors including a deliberately 4K-unaligned offset,
-checks the unaligned read agrees with the aligned read of the same bytes, and
-asserts the range hashes identically on a second read. Then record the result
-here.
+What that establishes, all of it previously unexecuted code:
+
+- `FILE_FLAG_NO_BUFFERING` reads work against a physical device.
+- The `OVERLAPPED` offset plumbing lands on the intended sectors, including
+  15.7 GB into the device, so 64-bit offsets are split correctly across
+  `Offset`/`OffsetHigh`.
+- **The bounce-buffer path is correct.** Reading the same LBA into a
+  sector-aligned `AlignedBuf` and into a deliberately skewed `Vec` slice
+  produced identical bytes. `bounce path exercised: yes` confirms the skewed
+  buffer really was unaligned, so this was not a vacuous pass - a lucky
+  allocation would have reported `no`.
+- Reads at an unaligned byte offset agree with the aligned read covering the
+  same range.
+- The device was not modified: the same byte range hashed identically on a
+  second read.
+
+Re-run any time with `.\scriptsun-smoke.ps1` from an Administrator shell.
+
+**This clears the Milestone 8 gate.**
+
 
 ### 1.1a On this machine, C: and D: are the same physical disk
 

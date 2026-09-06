@@ -2,7 +2,8 @@
 
 Running status per SPEC.md section 9. Last updated 2026-09-06.
 
-**Current state: Milestones 1 and 2 complete. Milestone 3 in progress.**
+**Current state: Milestones 1 and 2 complete and fully verified on Windows.
+Milestone 3 in progress.**
 
 The toolchain blocker is resolved: C: was freed, VS Build Tools 2022 is
 installed, and the workspace now builds and passes all 196 tests **natively on
@@ -212,21 +213,28 @@ fragmentation?
 
 ---
 
-## Gate: the Windows sector-read path before Milestone 8
+## Gate: the Windows sector-read path before Milestone 8 - DISCHARGED
 
-**Decided 2026-09-05, mostly discharged 2026-09-06.**
+**Raised 2026-09-05, cleared 2026-09-06.**
 
-The toolchain now builds natively, and enumeration, destination resolution,
-elevation detection and the smoke-test guards have all been executed against
-real hardware. Compiling the previously-unbuildable backend immediately found
-three real bugs, which is the argument for closing this kind of gap early
-rather than at Milestone 8.
+`rc smoke` has been run against a physical USB device and passed. Full result
+in `docs/LIMITATIONS.md` section 1.1. The whole Windows raw-device path is now
+verified: enumeration, destination resolution, elevation detection, the
+smoke-test guards, `FILE_FLAG_NO_BUFFERING` reads, the `OVERLAPPED` offset
+plumbing at 15.7 GB into a device, and the bounce buffer.
 
-**What remains gated:** the raw sector read (`read_unbuffered`,
-`FILE_FLAG_NO_BUFFERING`, `OVERLAPPED` offsets, buffer alignment) has still
-never executed. Milestone 8 does not start until `rc smoke` has run against a
-throwaway USB stick from an Administrator shell. The command is in
-`docs/LIMITATIONS.md` section 1.1 and takes about ten seconds.
+The bounce-buffer check is the one worth singling out. An earlier version of
+the test only varied the read *offset*, which never triggers the bounce path -
+that is triggered by an unaligned destination *address*. The test now reads the
+same LBA into an aligned buffer and a deliberately skewed one and compares, and
+reports whether the skewed buffer really landed unaligned so a lucky allocation
+cannot produce a vacuous pass. It reported `bounce path exercised: yes`.
+
+**What this cost to leave open:** compiling the backend for the first time
+found three real bugs in reviewed code, and running it found two more in the
+reporting layer. Every one of those would have been discovered through a GUI at
+Milestone 8 instead. The lesson is recorded here deliberately: "fine, just
+unverified" is not a state to leave code in when verifying it is cheap.
 
 ---
 
