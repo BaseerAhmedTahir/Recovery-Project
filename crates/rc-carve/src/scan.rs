@@ -444,7 +444,7 @@ pub fn scan(
         }
 
         let Some(validator) = sig.validator.as_deref() else {
-            // Header-match-only formats: 32 of the 44 by design. Emitted, but
+            // Header-match-only formats: 30 of the 44 by design. Emitted, but
             // with no length and a status that says why.
             candidates.push(Candidate {
                 offset: h.offset,

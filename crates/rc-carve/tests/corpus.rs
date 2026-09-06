@@ -57,6 +57,8 @@ fn validator_for(kind: &str) -> Option<&'static str> {
         "jpeg" => Some("jpeg"),
         "png" => Some("png"),
         "bmp" => Some("bmp"),
+        "ico" => Some("ico"),
+        "pe" => Some("pe"),
         "pdf" => Some("pdf"),
         "docx" => Some("zip"),
         "mp4" => Some("mp4"),
@@ -80,6 +82,9 @@ struct Sample {
 struct Corpus {
     dir: PathBuf,
     files: BTreeMap<String, Sample>,
+    /// Coverage this platform cannot provide at all - distinct from an encoder
+    /// that is merely not installed, which is a hard failure.
+    unavailable: Vec<String>,
     /// Human-readable note about where these files came from, printed by the
     /// tests so a run's output says what it actually measured.
     provenance: String,
@@ -165,6 +170,7 @@ fn generated() -> &'static Corpus {
         Corpus {
             dir,
             files,
+            unavailable: Vec::new(),
             provenance: "make_corpus.py (hand-written encoders for jpeg/png/pdf/mp4; \
                          Python zipfile and sqlite3 for docx/sqlite)"
                 .to_string(),
@@ -206,10 +212,20 @@ fn independent() -> &'static Corpus {
         }
         assert!(!files.is_empty(), "the independent corpus is empty");
 
+        let unavailable: Vec<String> = v["unavailable_here"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let tools = &v["tools"];
         Corpus {
             dir,
             files,
+            unavailable,
             provenance: format!(
                 "make_independent.py\n    ImageMagick: {}\n    ffmpeg     : {}",
                 tools["imagemagick"].as_str().unwrap_or("absent"),
@@ -252,6 +268,30 @@ fn check_accepted_with_exact_lengths(c: &Corpus, label: &str) {
                 "{rel} ({}, via {who}): {:?} - {}",
                 s.kind, out.status, out.detail
             ));
+        } else if s.kind == "pe" {
+            // PE is the one format here whose file may legitimately extend
+            // past everything its headers describe. Data appended after the
+            // last section - an "overlay" - is invisible to a section-table
+            // walk, and unless it is an Authenticode certificate table nothing
+            // in the file records where it ends.
+            //
+            // The interpreter in this corpus carries 2661 bytes of it. So the
+            // check is that the validator never claims more than the file, and
+            // the shortfall is reported rather than asserted away.
+            if out.length > s.size {
+                wrong_length.push(format!(
+                    "{rel} (pe, via {who}): claimed {} bytes from a {}-byte file",
+                    out.length, s.size
+                ));
+            } else if out.length < s.size {
+                eprintln!(
+                    "  note: {rel} has {} bytes of overlay past its last section \
+                     (headers describe {} of {})",
+                    s.size - out.length,
+                    out.length,
+                    s.size
+                );
+            }
         } else if out.length != s.size {
             // Reporting a length that is not the file's length is how a carve
             // produces a file that is subtly wrong rather than obviously wrong.
@@ -331,14 +371,23 @@ fn check_trailing_data_ignored(c: &Corpus, label: &str) {
         let Some(id) = validator_for(&s.kind) else {
             continue;
         };
+        let clean = validate::validate(id, &read(&c.dir, rel))
+            .expect("validator must exist")
+            .length;
+
         let mut data = read(&c.dir, rel);
         data.extend((0..4096u32).map(|n| (n.wrapping_mul(2_654_435_761) >> 24) as u8));
-
         let out = validate::validate(id, &data).expect("validator must exist");
-        if out.length != s.size {
+
+        // Compare against what the same validator said about the untouched
+        // file rather than against the file size. For every format but PE those
+        // are the same number; PE may legitimately stop short of the file's end
+        // because of overlay data no header describes. Either way, appending
+        // junk must not change the answer.
+        if out.length != clean {
             wrong.push(format!(
-                "{rel} ({}): {} bytes reported for a {}-byte file with 4 KiB appended",
-                s.kind, out.length, s.size
+                "{rel} ({}): {} bytes with 4 KiB appended, {clean} without",
+                s.kind, out.length
             ));
         }
     }
@@ -439,10 +488,19 @@ fn every_validator_is_graded_against_a_foreign_encoder() {
     for id in validate::VALIDATOR_IDS {
         match kinds.get(id) {
             Some(tools) => eprintln!("  {id:<10} {}", tools.join(", ")),
+            None if c.unavailable.iter().any(|u| u.starts_with(id)) => {
+                eprintln!("  {id:<10} UNAVAILABLE ON THIS PLATFORM");
+            }
             None => {
                 eprintln!("  {id:<10} NONE");
                 ungraded.push(*id);
             }
+        }
+    }
+    if !c.unavailable.is_empty() {
+        eprintln!("\n  this platform cannot supply:");
+        for u in &c.unavailable {
+            eprintln!("    {u}");
         }
     }
     assert!(

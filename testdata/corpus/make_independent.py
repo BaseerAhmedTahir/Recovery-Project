@@ -195,6 +195,14 @@ def magick_samples(magick):
             "webp",
             m(*src, "-define", "webp:lossless=true", "{out}"),
         ),
+        # --- ICO: the directory-plus-images format whose signature is
+        # three-quarters zeros, so real ones matter for grading the validator --
+        ("independent/im_icon.ico", "ico", m(*src, "-resize", "32x32", "{out}")),
+        (
+            "independent/im_multisize.ico",
+            "ico",
+            m(*src, "-resize", "16x16", "-define", "icon:auto-resize=16,32,48", "{out}"),
+        ),
         # --- PDF: ImageMagick writes PDF natively, no Ghostscript needed ----
         ("independent/im_onepage.pdf", "pdf", m(*src, "{out}")),
         (
@@ -288,8 +296,34 @@ def ffmpeg_samples(ffmpeg):
 # --------------------------------------------------------------------------
 
 
+def native_pe():
+    """A Windows executable produced by a real linker.
+
+    There is no way to *generate* a PE without a toolchain, and copying a system
+    binary into a committed corpus would be both large and a licensing question.
+    But the running Python interpreter is itself a PE on Windows, built by
+    MSVC's linker, and copying it into a scratch directory for the length of a
+    test raises neither problem. It is exactly what this corpus is for: a file
+    this project had no hand in writing.
+
+    On any other platform that interpreter is an ELF, so PE coverage is
+    genuinely unavailable rather than merely missing, and the caller is told so
+    rather than left to guess.
+    """
+    if os.name != "nt":
+        return None
+    exe = sys.executable
+    if not exe or not os.path.isfile(exe):
+        return None
+    return {"exe": exe, "version": "system linker (%s)" % os.path.basename(exe)}
+
+
 def probe():
-    return {"imagemagick": find_magick(), "ffmpeg": find_ffmpeg()}
+    return {
+        "imagemagick": find_magick(),
+        "ffmpeg": find_ffmpeg(),
+        "native_pe": native_pe(),
+    }
 
 
 def build(outdir):
@@ -298,16 +332,39 @@ def build(outdir):
 
     plan = []
     missing = []
+    unavailable = []
     if magick:
         plan += [(p, k, a, "imagemagick") for p, k, a in magick_samples(magick)]
     else:
-        missing.append("ImageMagick (jpeg, png, bmp, webp, pdf)")
+        missing.append("ImageMagick (jpeg, png, bmp, webp, pdf, ico)")
     if ffmpeg:
         plan += [(p, k, a, "ffmpeg") for p, k, a in ffmpeg_samples(ffmpeg)]
     else:
         missing.append("ffmpeg (mp4, wav, avi)")
 
     manifest = {}
+
+    # A PE is copied rather than generated; see native_pe().
+    pe = tools["native_pe"]
+    if pe:
+        dest = os.path.join(outdir, "independent", "system_binary.exe")
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(pe["exe"], dest)
+        with open(dest, "rb") as fh:
+            data = fh.read()
+        manifest["independent/system_binary.exe"] = {
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+            "kind": "pe",
+            "generator": "system-linker",
+            "generator_version": pe["version"],
+        }
+    else:
+        unavailable.append(
+            "pe (a Windows executable cannot be produced on %s; the PE validator "
+            "is graded by hand-built vectors here)" % os.name
+        )
+
     failures = []
     for rel, kind, argv, tool in plan:
         dest = os.path.join(outdir, rel.replace("/", os.sep))
@@ -340,7 +397,12 @@ def build(outdir):
         "tools": {
             k: (v["version"] if v else None) for k, v in tools.items()
         },
+        # Encoders that could be installed and are not. A hard failure.
         "missing_tools": missing,
+        # Coverage this platform cannot provide at all, which is a different
+        # thing from a missing install and is reported as such rather than
+        # quietly reducing what the suite claims to check.
+        "unavailable_here": unavailable,
         "failures": failures,
     }
 
@@ -371,6 +433,8 @@ def main(argv):
     # into a parser that only looks at "files".
     for m in doc["missing_tools"]:
         sys.stderr.write("MISSING ENCODER: %s\n" % m)
+    for m in doc["unavailable_here"]:
+        sys.stderr.write("UNAVAILABLE ON THIS PLATFORM: %s\n" % m)
     for f in doc["failures"]:
         sys.stderr.write(
             "FAILED: %s (%s via %s, exit %s)\n  %s\n"

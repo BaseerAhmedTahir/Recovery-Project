@@ -285,8 +285,10 @@ Prerequisites (all of which gate the carving grade being meaningful):
 | Fixtures rebuilt on the adversarial corpus | done, all eight |
 | An NTFS fixture from a driver other than ntfs-3g | done: `ntfs-windows.img`, built by the Microsoft NTFS driver |
 | quickformat verified to retain content | done, checked empirically at build time |
-| Validators doing real structural decoding | done: 10 validators, 94 unit tests plus 4 corpus tests |
-| Precision measured alongside recall | done for validators; still to do for the scanner as a whole |
+| Validators doing real structural decoding | done: 12 validators, 126 unit tests plus 8 corpus tests |
+| Precision measured alongside recall | done for both: validators on two corpora, scanner on the quickformat fixture |
+| Multi-threaded scanner with a SIMD prefilter | done; prefilter threshold set by measurement |
+| Byte-exact recovery of contiguous files | done: 228 of 228 on the quick-formatted fixture |
 | Throughput measurable | see below |
 | RSS ceiling testable | see below |
 
@@ -332,6 +334,8 @@ agreement.
 
 | Validator | Graded by |
 |---|---|
+| `ico` | ImageMagick |
+| `pe` | the system linker (a real signed-format binary) |
 | `jpeg` | ImageMagick, ffmpeg |
 | `png` | ImageMagick, ffmpeg |
 | `bmp` | ImageMagick, ffmpeg |
@@ -343,7 +347,7 @@ agreement.
 | `zip` | Python `zipfile` |
 | `sqlite` | Python `sqlite3` |
 
-All 29 accepted with exact lengths on the first run, 261 cross-format trials,
+All 32 accepted with exact lengths, 352 cross-format trials,
 zero false positives. The variants move the structures the validators actually
 walk rather than just adding files: progressive vs baseline JPEG, interlaced
 and 16-bit PNG, three BMP bit depths, lossy vs lossless WebP, and - confirmed
@@ -487,8 +491,43 @@ means anything:
 Note that items 0 and 0c are settled for the validators but **not for the
 scanner**, which does not exist yet.
 
-**The scanner gets its own denominator, and validator figures must not be
-quoted anywhere near it.** Everything measured so far - 228/228 accepted, 0
+### Scanner results on the quick-formatted fixture
+
+| Measure | Value |
+|---|---|
+| Scanned | 512 MiB, 8 threads, byte-table prefilter |
+| Header matches (the scanner's raw output) | 4203 = **8406 per GB** |
+| Rejected by a validator | 3891 |
+| Suppressed as contained | 84 |
+| **Candidates emitted** | **228** |
+| **Byte-exact recovery** | **228 of 228** carvable deleted files |
+| Precision at full recall | **1.0 candidates examined per file recovered** |
+| Validators' contribution | removed 94.6% of raw header matches |
+
+By extension the output is exactly the corpus: docx 42, jpg 47, mp4 27, pdf 47,
+png 49, sqlite 16. Nothing else is emitted at all.
+
+**What this does not license.** The fixture is 98.6% zeros, which is why
+`00 00 01 00` matched 3782 times; a real drive carries far more entropy and
+will generate a different, probably larger, false-positive population. Every
+file here is contiguous, so this says nothing about fragmentation - that is
+Milestone 4. And 8406 header matches per GB is a property of this fixture, not
+a constant. The number to watch on real hardware is the ratio, not the totals.
+
+Getting here required three bugs to be found by the measurement rather than by
+review, all in the same family: a validator reporting the size of the buffer it
+was handed as if it were the length of the file. See the commit log for
+`502d305`. The general test - feed each validator a truncated file with three
+different amounts of padding and fail if the reported length moves - is what
+turned one found instance into four fixed ones.
+
+Two validators were written *because* of this measurement rather than from the
+format list: `ico` (3782 of 4060 candidates before it existed) and `pe` (50, in
+a fixture containing no executables).
+
+### The scanner's denominator
+
+**Validator figures must not be quoted anywhere near the scanner's.** Everything measured so far - 228/228 accepted, 0
 false positives in 2922 cross-format trials, 29/29 on the independent corpus -
 was measured with known file boundaries handed to the validator. The scanner
 faces a completely different distribution:

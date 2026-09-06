@@ -22,9 +22,11 @@
 //! from a damaged disk, which is the definition of hostile input.
 
 pub mod bmp;
+pub mod ico;
 pub mod jpeg;
 pub mod mp4;
 pub mod pdf;
+pub mod pe;
 pub mod png;
 pub mod riff;
 pub mod sqlite;
@@ -165,7 +167,8 @@ impl Outcome {
 /// Kept next to the dispatcher so the two cannot drift apart, and asserted
 /// against the shipped signature database in the tests below.
 pub const VALIDATOR_IDS: &[&str] = &[
-    "bmp", "jpeg", "mp4", "pdf", "png", "riff_avi", "riff_wav", "riff_webp", "sqlite", "zip",
+    "bmp", "ico", "jpeg", "mp4", "pdf", "pe", "png", "riff_avi", "riff_wav", "riff_webp",
+    "sqlite", "zip",
 ];
 
 /// Run the validator named by `id` over a candidate.
@@ -178,9 +181,11 @@ pub const VALIDATOR_IDS: &[&str] = &[
 pub fn validate(id: &str, data: &[u8]) -> Option<Outcome> {
     Some(match id {
         "bmp" => bmp::validate(data),
+        "ico" => ico::validate(data),
         "jpeg" => jpeg::validate(data),
         "mp4" => mp4::validate(data),
         "pdf" => pdf::validate(data),
+        "pe" => pe::validate(data),
         "png" => png::validate(data),
         "riff_avi" => riff::validate_avi(data),
         "riff_wav" => riff::validate_wav(data),

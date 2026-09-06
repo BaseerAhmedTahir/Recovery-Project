@@ -315,6 +315,66 @@ Byte-level recovery is what Milestones 3 and 4 grade.
 
 ---
 
+### 3.6 The carving result is a fixture result, not a drive result
+
+The scanner recovers 228 of 228 carvable files byte-exactly from
+`quickformat.img`, emitting exactly 228 candidates - one per file, nothing
+else. That is a real result and it is also a *fixture* result. Four reasons not
+to read it as a claim about a real drive:
+
+1. **The fixture is 98.6% zeros.** That is why `00 00 01 00` matched 3782 times
+   before the ICO validator existed. A used drive carries far more entropy in
+   its free space, and entropy is what generates plausible-looking headers.
+   Expect more false positives there, not fewer.
+2. **Every file in it is contiguous.** Carving a fragmented file is Milestone 4
+   and none of this measures it. The `fragmented-jpeg` fixture exists precisely
+   because contiguous-only carving should recover *none* of its files
+   byte-exactly.
+3. **Every file is one of eight formats this corpus generates.** A real drive
+   holds formats the database does not know, formats it knows without a
+   validator, and half-overwritten remnants of files deleted months earlier.
+4. **8406 header matches per GB is a property of this image.** The ratio is
+   worth watching across scans; the absolute number is not transferable.
+
+The honest summary is that the carve pipeline is correct on data whose ground
+truth is known, and untested on data whose ground truth is not. That second
+category is every drive anyone would actually run this on.
+
+### 3.6a A carved PE loses any overlay data
+
+A Windows executable may carry an "overlay": bytes appended after the last
+section, which the loader ignores and which no header describes. The PE
+validator walks the section table and adds the Authenticode certificate table
+when data directory entry 4 names one - that entry is unusual in holding a file
+offset rather than a virtual address - but an overlay that is neither is
+unbounded from inside the file.
+
+The Python interpreter in the independent corpus is exactly this case: 10
+sections ending at 98816 bytes, no signature, and 2661 bytes of overlay, for a
+101477-byte file. A carve of it recovers a binary that will run and is not
+byte-identical.
+
+This is a genuine limit rather than a bug, and it was found by a real file:
+hand-built PE vectors have no overlay because I would not have thought to add
+one. Bounding it needs content heuristics and belongs with `rc-bifrag` in
+Milestone 4.
+
+### 3.7 Fourteen of the 44 signatures have a validator; 30 do not
+
+A signature without a validator is a header match and nothing more: it is
+emitted with no length and a `Partial` status saying why. Those 14 draw on 12 distinct validators, since the three RIFF
+forms share a walk and MP4 covers HEIC and M4A too. On the quick-formatted
+fixture the two noisiest header-only formats - ICO and PE - were 3832 of 4060 candidates
+before validators were written for them, so this is the dominant precision
+lever left.
+
+The ones most likely to matter next, in rough order of how often a header-only
+match will be wrong: `gif`, `tiff_le`/`tiff_be`, `mp3_id3`, `ole2`, `rar`,
+`7z`, `gzip`, `mkv`. GIF and TIFF are cheap to validate and ImageMagick can
+already produce both for the independent corpus.
+
+---
+
 ## 4. Test-coverage gaps
 
 - **No bad-sector hardware test.** The trim and scrape passes are exercised by
@@ -333,7 +393,16 @@ Byte-level recovery is what Milestones 3 and 4 grade.
 - **No carving precision measurement yet.** Recall without precision is
   meaningless for a signature carver; see `docs/PROGRESS.md`.
 - **The candidate index has never been under memory pressure.** The 2 GB RSS
-  ceiling from Milestone 3 cannot be tested against 512 MiB fixtures.
+  ceiling from Milestone 3 cannot be tested against 512 MiB fixtures. The
+  scanner's own buffers are bounded - block buffers are recycled through a
+  channel and the validation buffer is reused - but the candidate list is held
+  in memory and grows with the number of hits, which is what `rc-index` is for.
+- **Carving throughput has never been measured against a device.** The 512 MiB
+  fixture is served from the page cache, and `ScanStats::cache_warning` says so
+  rather than printing the figure as a device speed. The scan is I/O-bound on
+  any real medium anyway - one thread prefilters at roughly 1 GB/s against a
+  USB stick's 30 MB/s - so the number that matters will come from the hardware
+  smoke path, not from a fixture.
 - **The independent corpus is not in the disk images.** ImageMagick and ffmpeg
   now supply real files for all eight formats the generated corpus could not
   vouch for, but those samples are validated as bytes rather than written into
