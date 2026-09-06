@@ -52,7 +52,8 @@ What that establishes, all of it previously unexecuted code:
 - The device was not modified: the same byte range hashed identically on a
   second read.
 
-Re-run any time with `.\scriptsun-smoke.ps1` from an Administrator shell.
+Re-run any time with `.\scripts
+un-smoke.ps1` from an Administrator shell.
 
 **This clears the Milestone 8 gate.**
 
@@ -108,6 +109,28 @@ C: fell to ~250 MB free during Milestone 1, which blocked the toolchain
 install. It now has ~14 GB. `RUSTUP_HOME`, `CARGO_HOME`, the build target
 directory, the WSL toolchain and all fixtures still live on D:, and should
 stay there.
+
+### 2.2a Long filenames need extended-length paths on Windows
+
+The corpus deliberately contains a 250-character filename, which is legal on
+NTFS, FAT and exFAT alike but pushes a full path past Windows' 260-character
+MAX_PATH as soon as it sits in any non-trivial directory.
+
+This is not theoretical: it has now broken two separate pieces of the project's
+own tooling. `make_corpus.py` could not create the file until it was taught to
+emit the `\\?\` extended-length prefix, and `make-windows-fixture.ps1` failed
+on its first run because `Copy-Item` cannot open such a path even though
+`Get-ChildItem` will happily enumerate it.
+
+The rule for any Windows-side tooling here: **use the .NET file APIs with a
+`\\?\`-prefixed path, not the PowerShell cmdlets.** `Copy-Item`,
+`Remove-Item` and `Test-Path` are unreliable past MAX_PATH in PowerShell 5.1.
+`[System.IO.File]::Copy`, `::Delete` and `::Exists` honour the prefix.
+
+Worth noting this says nothing about the *engine*, which reads raw bytes and
+never opens a recovered file by path. It matters for the fixture generators and
+it will matter again in Milestone 3, when carved files are written out to a
+destination directory under their recovered names.
 
 ### 2.3 exFAT needs a FUSE driver under WSL2
 
