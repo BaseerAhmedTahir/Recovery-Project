@@ -47,6 +47,7 @@ struct DeviceJson {
 /// Honest expectation-setting, driven by what the device actually reports.
 fn recovery_outlook(d: &DeviceInfo) -> String {
     match (d.trim, d.rotational, d.removable) {
+        // TRIM is the dominant fact whatever the medium is.
         (TrimSupport::Yes, _, _) => {
             "poor - device reports TRIM; deleted data is usually zeroed by the controller"
                 .to_string()
@@ -54,8 +55,23 @@ fn recovery_outlook(d: &DeviceInfo) -> String {
         (_, Some(true), _) => {
             "good - mechanical drive; data persists until overwritten".to_string()
         }
+        // Removable, and does not answer the seek-penalty query at all.
+        //
+        // This is the ordinary USB stick and SD card case, and it is the most
+        // recoverable medium in SPEC.md's table. Requiring rotational ==
+        // Some(false) here would be wrong: USB mass-storage bridges routinely
+        // fail IOCTL_STORAGE_QUERY_PROPERTY's seek-penalty descriptor, so the
+        // best-case medium would be reported as "unknown".
+        (_, None, Some(true)) => {
+            "good - removable flash rarely implements TRIM; carving usually works well"
+                .to_string()
+        }
+        // Removable *and* reports itself solid state: most likely an external
+        // SSD in an enclosure, which frequently does pass TRIM through even
+        // when it does not advertise it. Not the same case as a flash stick.
         (_, Some(false), Some(true)) => {
-            "good - removable flash usually has no TRIM; carving works well".to_string()
+            "uncertain - removable solid state; an external SSD enclosure may pass \n             TRIM through even when it does not report it"
+                .to_string()
         }
         (_, Some(false), _) => {
             "uncertain - solid state; check whether TRIM is active on this volume".to_string()
@@ -157,14 +173,13 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
         println!("note: {n}");
     }
 
-    // Only say something about recovery odds when we actually know something.
+    // Report the outlook whenever we actually know something, not only when
+    // the news is bad. A removable flash device is the best-case medium and
+    // the operator should be told that as readily as they are told about TRIM.
     for d in &devices {
-        if d.trim == TrimSupport::Yes {
-            println!(
-                "note: {} reports TRIM. {}",
-                d.path.display(),
-                recovery_outlook(d)
-            );
+        let outlook = recovery_outlook(d);
+        if !outlook.starts_with("unknown") {
+            println!("note: {}: {}", d.path.display(), outlook);
         }
     }
 
