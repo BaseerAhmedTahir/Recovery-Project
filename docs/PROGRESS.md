@@ -281,16 +281,55 @@ Prerequisites (all of which gate the carving grade being meaningful):
 |---|---|
 | Corpus grown to a few hundred files | done: 315 files, 111 deleted, 204 retained as precision distractors |
 | Every signature carries a max_size | done and load-time enforced; 37 of 44 formats are footerless and depend on it |
-| OOXML sniffed rather than emitted as .zip | signature entry defers to the zip validator; validator not written yet |
+| OOXML sniffed rather than emitted as .zip | done: 42 of 42 corpus docx files refine from the zip container |
 | Fixtures rebuilt on the adversarial corpus | done, all eight |
+| An NTFS fixture from a driver other than ntfs-3g | done: `ntfs-windows.img`, built by the Microsoft NTFS driver |
 | quickformat verified to retain content | done, checked empirically at build time |
-| Precision measured alongside recall | not started, part of the acceptance test |
+| Validators doing real structural decoding | done: 10 validators, 94 unit tests plus 4 corpus tests |
+| Precision measured alongside recall | done for validators; still to do for the scanner as a whole |
 | Throughput measurable | see below |
 | RSS ceiling testable | see below |
 
 Built so far: the signature database (44 formats spanning image, video, audio,
-document, archive and database) and its loader, with 11 tests. The scanner,
-the validators and `rc-index` are next.
+document, archive and database) with its loader, and the validators. The
+scanner and `rc-index` are next.
+
+### Validators: what they check and what the corpus run showed
+
+Ten validators - `jpeg`, `png`, `bmp`, `pdf`, `zip`, `mp4`, `sqlite`,
+`riff_wav`, `riff_avi`, `riff_webp` - each walking the format's own internal
+accounting rather than matching a header. Two tests in `validate/mod.rs` tie
+them to the signature database in both directions, so a typo in
+`signatures.json` cannot silently disable one and leave every candidate of
+that format unvalidated.
+
+Measured against the 315-file corpus (`crates/rc-carve/tests/corpus.rs`):
+
+| Measure | Result |
+|---|---|
+| Corpus files accepted | 228 of 228 that have a validator, all `Valid` |
+| Reported length exactly equal to file size | 228 of 228 |
+| Length still exact with 4 KiB of junk appended | 228 of 228 |
+| docx refined from the zip container | 42 of 42 |
+| Cross-format trials (validator vs. a format that is not its own) | 2922 |
+| False positives among them | 0 |
+
+The 87 `text` and `binary` corpus files are the negative control: they are not
+any carvable format, and all ten validators reject every one of them.
+
+**How much this proves, honestly.** The docx and sqlite results are genuinely
+independent evidence: those files come from Python's `zipfile` and `sqlite3`,
+which this crate had no hand in. The jpeg, png, pdf and mp4 results are weaker,
+because the corpus builds those with hand-written encoders in
+`make_corpus.py` - the encoder and validator were written from opposite
+directions, but a shared misreading of a spec would not be caught. Real files
+from real cameras and real word processors remain untested, and that gap
+closes only against actual recovered media.
+
+**Not yet validated against a real file of its own kind:** `bmp`, `riff_wav`,
+`riff_avi`, `riff_webp`. The corpus contains no BMP, WAV, AVI or WebP, so those
+four are exercised only by hand-built byte vectors. Recorded in
+`docs/LIMITATIONS.md` section 4.
 
 ### The fixture generator now retries until fragmentation is real
 
@@ -414,7 +453,15 @@ means anything:
 0c. **Every footerless format needs a per-format maximum size**, or one
    spurious header swallows gigabytes. And OOXML files carve as bare ZIPs, so
    sniff `[Content_Types].xml` to emit `.docx`/`.xlsx`/`.pptx` rather than
-   `.zip`.
+   `.zip`. *Both done - the ceilings are load-time enforced, and the zip
+   validator refines docx/xlsx/pptx/jar/apk/epub from the member names.*
+
+Note that items 0 and 0c are settled for the validators but **not for the
+scanner**, which does not exist yet. Validator precision is a per-candidate
+property; scanner precision is a property of how many candidates get generated
+in the first place, and only the second one decides whether a carve of a real
+drive is usable. The acceptance test still has to report both numbers over a
+whole fixture.
 
 Then:
 
