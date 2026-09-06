@@ -5,6 +5,7 @@ members = [
     "crates/rc-image",
     "crates/rc-partition",
     "crates/rc-fs",
+    "crates/rc-carve",
     "crates/rc-cli",
     "crates/xtask",
 ]
@@ -39,11 +40,15 @@ indicatif = "0.17"
 # --- platform ---
 libc = "0.2"
 
+# --- parallelism ---
+rayon = "1"
+
 # --- internal ---
 rc-device = { path = "crates/rc-device" }
 rc-image = { path = "crates/rc-image" }
 rc-partition = { path = "crates/rc-partition" }
 rc-fs = { path = "crates/rc-fs" }
+rc-carve = { path = "crates/rc-carve" }
 
 # Optimise dependencies even in dev/test builds while leaving our own crates
 # unoptimised and debuggable.

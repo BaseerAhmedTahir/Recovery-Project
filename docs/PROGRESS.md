@@ -265,7 +265,63 @@ throwaway USB stick from an Administrator shell. The command is in
 
 ---
 
-## Next: Milestone 3
+## Milestone 3 progress
+
+Prerequisites (all of which gate the carving grade being meaningful):
+
+| Prerequisite | Status |
+|---|---|
+| Corpus grown to a few hundred files | done: 315 files, 111 deleted, 204 retained as precision distractors |
+| Every signature carries a max_size | done and load-time enforced; 37 of 44 formats are footerless and depend on it |
+| OOXML sniffed rather than emitted as .zip | signature entry defers to the zip validator; validator not written yet |
+| Fixtures rebuilt on the adversarial corpus | done, all eight |
+| quickformat verified to retain content | done, checked empirically at build time |
+| Precision measured alongside recall | not started, part of the acceptance test |
+| Throughput measurable | see below |
+| RSS ceiling testable | see below |
+
+Built so far: the signature database (44 formats spanning image, video, audio,
+document, archive and database) and its loader, with 11 tests. The scanner,
+the validators and `rc-index` are next.
+
+### The fixture generator now retries until fragmentation is real
+
+Growing the corpus to 315 files made NTFS stop fragmenting the target: with
+more files on the volume, freeing "every other filler file by name" coalesced
+into contiguous runs instead of scattered holes, because ntfs-3g does not
+allocate in creation order. The build warned rather than silently shipping a
+fixture that claimed a fragmentation it did not have.
+
+`fragment_one` now frees a seeded-random subset instead of every Nth file, and
+verifies the result against the image, retrying with progressively finer hole
+fields. NTFS needed the third attempt (8 KiB holes, three files freed in every
+four); the other three filesystems succeed on the first. That difference is
+itself worth knowing: ntfs-3g is markedly better at finding contiguous free
+space than vfat, exfat-fuse or ext4.
+
+### Throughput and RSS, given what this machine can actually measure
+
+Native Windows builds now work, which changes both answers.
+
+**Throughput** should be measured natively on Windows against a real drive,
+not under WSL. Every read from `/mnt/d` crosses the drvfs bridge at roughly
+20 MiB/s regardless of file size, so no fixture built there can produce a
+device throughput number - the bottleneck is the bridge, not the page cache
+and not the scanner. Measuring on the actual target platform is both cheaper
+and more meaningful than building a multi-gigabyte fixture inside WSL.
+
+**Peak RSS** is graded two ways, because the literal criterion is not testable
+here. This host has 7.8 GB of RAM and WSL is capped at 2.9 GB, so a "< 2 GB"
+assertion could only fail by OOM, and passing it against a 512 MiB fixture
+would prove nothing about whether the index is disk-backed. So the benchmark
+reports peak RSS (satisfying the letter of SPEC.md section 5.8) *and*
+asserts the property that actually matters: that RSS stays roughly flat as the
+candidate count grows tenfold. A design that held candidates in RAM fails the
+second test on any fixture size.
+
+---
+
+## Next: Milestone 3 (continued)
 
 `rc-carve` signature engine plus validators, `rc-index`, and a throughput
 benchmark. Acceptance: carve 20+ formats from the quick-formatted fixture,

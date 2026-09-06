@@ -1,0 +1,21 @@
+[package]
+name = "rc-carve"
+description = "Signature carving: the signature database, the scanner, and real-decode validators."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc-device.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+memchr = "2"
+rayon.workspace = true
+
+[dev-dependencies]
+rc-device = { path = "../rc-device", features = ["test-util"] }
+sha2.workspace = true
+hex.workspace = true

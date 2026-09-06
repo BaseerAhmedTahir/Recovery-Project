@@ -1,0 +1,410 @@
+{
+  "_comment": [
+    "Signature database for rc-carve (SPEC.md section 5.5).",
+    "",
+    "A data file rather than a hardcoded table so it can be extended without",
+    "recompiling. Starts at ~40 high-value formats and grows toward 350+.",
+    "",
+    "Fields:",
+    "  id          stable identifier, also the validator key",
+    "  ext         file extension to emit",
+    "  category    image | video | audio | document | archive | database | other",
+    "  header      hex bytes at the start of the file",
+    "  header_mask optional hex mask; a zero nibble means 'ignore this nibble'",
+    "  header_off  byte offset of the header within the file (default 0)",
+    "  footer      optional hex bytes that terminate the file",
+    "  max_size    hard ceiling in bytes",
+    "  validator   optional validator id; 'none' means header match only",
+    "",
+    "max_size is mandatory and matters more than it looks. A format with no",
+    "footer is terminated only by this number, so a single spurious header",
+    "would otherwise swallow gigabytes of unrelated disk and produce one",
+    "enormous bogus candidate. Values are set generously above realistic file",
+    "sizes but far below 'the rest of the volume'.",
+    "",
+    "Ordering note: entries whose header is a prefix of another must appear",
+    "after the more specific one. ZIP is the important case - every OOXML file",
+    "and every JAR is a ZIP, so the ZIP entry sniffs its content to decide what",
+    "it really is rather than emitting .zip for all of them."
+  ],
+
+  "signatures": [
+    {
+      "id": "jpeg",
+      "ext": "jpg",
+      "category": "image",
+      "header": "FFD8FF",
+      "footer": "FFD9",
+      "max_size": 67108864,
+      "validator": "jpeg",
+      "note": "FF D8 FF also occurs inside every JPEG carrying an EXIF thumbnail, so the validator must confirm a complete frame rather than trusting the header."
+    },
+    {
+      "id": "png",
+      "ext": "png",
+      "category": "image",
+      "header": "89504E470D0A1A0A",
+      "footer": "49454E44AE426082",
+      "max_size": 134217728,
+      "validator": "png"
+    },
+    {
+      "id": "gif",
+      "ext": "gif",
+      "category": "image",
+      "header": "474946383961",
+      "footer": "003B",
+      "max_size": 33554432,
+      "validator": "none"
+    },
+    {
+      "id": "gif87",
+      "ext": "gif",
+      "category": "image",
+      "header": "474946383761",
+      "footer": "003B",
+      "max_size": 33554432,
+      "validator": "none"
+    },
+    {
+      "id": "bmp",
+      "ext": "bmp",
+      "category": "image",
+      "header": "424D",
+      "max_size": 134217728,
+      "validator": "bmp",
+      "note": "Only two header bytes, so this is a false-positive machine without the validator reading the size field back."
+    },
+    {
+      "id": "tiff_le",
+      "ext": "tif",
+      "category": "image",
+      "header": "49492A00",
+      "max_size": 268435456,
+      "validator": "none"
+    },
+    {
+      "id": "tiff_be",
+      "ext": "tif",
+      "category": "image",
+      "header": "4D4D002A",
+      "max_size": 268435456,
+      "validator": "none"
+    },
+    {
+      "id": "webp",
+      "ext": "webp",
+      "category": "image",
+      "header": "52494646",
+      "header_off": 0,
+      "max_size": 67108864,
+      "validator": "riff_webp",
+      "note": "RIFF container; the validator checks the WEBP form type at offset 8."
+    },
+    {
+      "id": "heic",
+      "ext": "heic",
+      "category": "image",
+      "header": "6674797068656963",
+      "header_off": 4,
+      "max_size": 134217728,
+      "validator": "mp4"
+    },
+    {
+      "id": "cr2",
+      "ext": "cr2",
+      "category": "image",
+      "header": "49492A00100000004352",
+      "max_size": 134217728,
+      "validator": "none"
+    },
+    {
+      "id": "nef",
+      "ext": "nef",
+      "category": "image",
+      "header": "4D4D002A00000008",
+      "max_size": 134217728,
+      "validator": "none"
+    },
+    {
+      "id": "psd",
+      "ext": "psd",
+      "category": "image",
+      "header": "38425053",
+      "max_size": 536870912,
+      "validator": "none"
+    },
+    {
+      "id": "ico",
+      "ext": "ico",
+      "category": "image",
+      "header": "00000100",
+      "max_size": 1048576,
+      "validator": "none"
+    },
+
+    {
+      "id": "mp4",
+      "ext": "mp4",
+      "category": "video",
+      "header": "66747970",
+      "header_off": 4,
+      "max_size": 8589934592,
+      "validator": "mp4",
+      "note": "ftyp sits at offset 4, after the box size. The validator walks the atom tree and reconciles moov against mdat."
+    },
+    {
+      "id": "avi",
+      "ext": "avi",
+      "category": "video",
+      "header": "52494646",
+      "max_size": 4294967296,
+      "validator": "riff_avi"
+    },
+    {
+      "id": "mkv",
+      "ext": "mkv",
+      "category": "video",
+      "header": "1A45DFA3",
+      "max_size": 8589934592,
+      "validator": "none"
+    },
+    {
+      "id": "mpeg_ps",
+      "ext": "mpg",
+      "category": "video",
+      "header": "000001BA",
+      "max_size": 4294967296,
+      "validator": "none"
+    },
+    {
+      "id": "flv",
+      "ext": "flv",
+      "category": "video",
+      "header": "464C5601",
+      "max_size": 2147483648,
+      "validator": "none"
+    },
+    {
+      "id": "asf_wmv",
+      "ext": "wmv",
+      "category": "video",
+      "header": "3026B2758E66CF11",
+      "max_size": 4294967296,
+      "validator": "none"
+    },
+
+    {
+      "id": "wav",
+      "ext": "wav",
+      "category": "audio",
+      "header": "52494646",
+      "max_size": 2147483648,
+      "validator": "riff_wav"
+    },
+    {
+      "id": "mp3_id3",
+      "ext": "mp3",
+      "category": "audio",
+      "header": "494433",
+      "max_size": 268435456,
+      "validator": "none"
+    },
+    {
+      "id": "flac",
+      "ext": "flac",
+      "category": "audio",
+      "header": "664C6143",
+      "max_size": 1073741824,
+      "validator": "none"
+    },
+    {
+      "id": "ogg",
+      "ext": "ogg",
+      "category": "audio",
+      "header": "4F676753",
+      "max_size": 1073741824,
+      "validator": "none"
+    },
+    {
+      "id": "m4a",
+      "ext": "m4a",
+      "category": "audio",
+      "header": "667479704D344120",
+      "header_off": 4,
+      "max_size": 1073741824,
+      "validator": "mp4"
+    },
+    {
+      "id": "aiff",
+      "ext": "aiff",
+      "category": "audio",
+      "header": "464F524D",
+      "max_size": 1073741824,
+      "validator": "none"
+    },
+
+    {
+      "id": "pdf",
+      "ext": "pdf",
+      "category": "document",
+      "header": "255044462D",
+      "footer": "2525454F46",
+      "max_size": 1073741824,
+      "validator": "pdf",
+      "note": "%PDF- to %%EOF. A PDF can contain several %%EOF markers from incremental updates, so the validator takes the last one."
+    },
+    {
+      "id": "rtf",
+      "ext": "rtf",
+      "category": "document",
+      "header": "7B5C727466",
+      "footer": "7D",
+      "max_size": 67108864,
+      "validator": "none"
+    },
+    {
+      "id": "ole2",
+      "ext": "doc",
+      "category": "document",
+      "header": "D0CF11E0A1B11AE1",
+      "max_size": 536870912,
+      "validator": "none",
+      "note": "Legacy Office compound file: .doc, .xls, .ppt and .msg all share it."
+    },
+    {
+      "id": "eml",
+      "ext": "eml",
+      "category": "document",
+      "header": "46726F6D3A20",
+      "max_size": 134217728,
+      "validator": "none"
+    },
+
+    {
+      "id": "zip",
+      "ext": "zip",
+      "category": "archive",
+      "header": "504B0304",
+      "footer": "504B0506",
+      "max_size": 4294967296,
+      "validator": "zip",
+      "note": "Every OOXML document and JAR is a ZIP. The validator reads [Content_Types].xml and the member names to decide whether this is really .docx, .xlsx, .pptx or a plain .zip, rather than emitting .zip for all of them."
+    },
+    {
+      "id": "rar",
+      "ext": "rar",
+      "category": "archive",
+      "header": "526172211A0700",
+      "max_size": 8589934592,
+      "validator": "none"
+    },
+    {
+      "id": "rar5",
+      "ext": "rar",
+      "category": "archive",
+      "header": "526172211A070100",
+      "max_size": 8589934592,
+      "validator": "none"
+    },
+    {
+      "id": "7z",
+      "ext": "7z",
+      "category": "archive",
+      "header": "377ABCAF271C",
+      "max_size": 8589934592,
+      "validator": "none"
+    },
+    {
+      "id": "gzip",
+      "ext": "gz",
+      "category": "archive",
+      "header": "1F8B08",
+      "max_size": 4294967296,
+      "validator": "none"
+    },
+    {
+      "id": "bzip2",
+      "ext": "bz2",
+      "category": "archive",
+      "header": "425A68",
+      "max_size": 4294967296,
+      "validator": "none"
+    },
+    {
+      "id": "xz",
+      "ext": "xz",
+      "category": "archive",
+      "header": "FD377A585A00",
+      "max_size": 4294967296,
+      "validator": "none"
+    },
+    {
+      "id": "cab",
+      "ext": "cab",
+      "category": "archive",
+      "header": "4D53434600000000",
+      "max_size": 2147483648,
+      "validator": "none"
+    },
+
+    {
+      "id": "sqlite",
+      "ext": "sqlite",
+      "category": "database",
+      "header": "53514C69746520666F726D6174203300",
+      "max_size": 4294967296,
+      "validator": "sqlite",
+      "note": "The header is 16 bytes of literal text, so false positives are rare. The validator confirms the page size is a power of two and the page count is consistent."
+    },
+
+    {
+      "id": "exe_pe",
+      "ext": "exe",
+      "category": "other",
+      "header": "4D5A",
+      "max_size": 536870912,
+      "validator": "none"
+    },
+    {
+      "id": "elf",
+      "ext": "elf",
+      "category": "other",
+      "header": "7F454C46",
+      "max_size": 536870912,
+      "validator": "none"
+    },
+    {
+      "id": "sqlite_wal",
+      "ext": "wal",
+      "category": "database",
+      "header": "377F0682",
+      "max_size": 4294967296,
+      "validator": "none"
+    },
+    {
+      "id": "evtx",
+      "ext": "evtx",
+      "category": "other",
+      "header": "456C6646696C6500",
+      "max_size": 1073741824,
+      "validator": "none"
+    },
+    {
+      "id": "reg_hive",
+      "ext": "hiv",
+      "category": "other",
+      "header": "72656766",
+      "max_size": 1073741824,
+      "validator": "none"
+    },
+    {
+      "id": "vhd",
+      "ext": "vhd",
+      "category": "other",
+      "header": "636F6E6E65637469",
+      "max_size": 137438953472,
+      "validator": "none"
+    }
+  ]
+}

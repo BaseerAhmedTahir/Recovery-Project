@@ -96,25 +96,46 @@ populate_corpus() {
 # deleted. After that the *only* free space is a field of FRAG_HOLE_KIB holes,
 # and the target cannot be stored contiguously.
 fragment_one() {
-    local mp="$1" src="$2" rel="$3"
+    local mp="$1" src="$2" rel="$3" img="$4"
     local size_kib
     size_kib=$(( ( $(stat -c %s "$src/$rel") + 1023 ) / 1024 ))
-    rc_log "fragmenting $rel (${size_kib}KiB) with ${FRAG_HOLE_KIB}KiB holes"
 
-    FRAG_MP="$mp" FRAG_HOLE_KIB="$FRAG_HOLE_KIB" \
-    FRAG_SMALL_TOTAL_MIB="$FRAG_SMALL_TOTAL_MIB" python3 - <<'PY'
-import os, sys
+    # Attempt with progressively harsher hole fields, verifying each one.
+    #
+    # The allocator has the last word here. ntfs-3g does not necessarily lay
+    # filler files down in creation order, so freeing "every other file by
+    # name" can coalesce into large contiguous runs rather than scattered
+    # holes, and the target then lands contiguously - which is exactly what
+    # happened once the corpus grew to 315 files. Rather than assume the
+    # technique works, each attempt is checked against the image and retried.
+    local attempt hole frac layout
+    layout="unknown"
+    for attempt in 1 2 3; do
+        case "$attempt" in
+            1) hole="$FRAG_HOLE_KIB"; frac=2 ;;   # free 1 file in 2
+            2) hole=16;               frac=3 ;;   # smaller holes, free 2 in 3
+            3) hole=8;                frac=4 ;;   # smaller still, free 3 in 4
+        esac
+        rc_log "fragmenting $rel (${size_kib}KiB): attempt $attempt, ${hole}KiB holes, freeing $((frac-1)) in $frac"
+
+        rm -f "$mp/$rel"
+        rm -rf "$mp/.smallfill" "$mp/.bigfill"
+        sync
+
+        FRAG_MP="$mp" FRAG_HOLE_KIB="$hole" FRAG_FRAC="$frac" \
+        FRAG_SMALL_TOTAL_MIB="$FRAG_SMALL_TOTAL_MIB" python3 - <<'FRAGPY'
+import os, random, sys
 
 mp = os.environ["FRAG_MP"]
 hole_kib = int(os.environ["FRAG_HOLE_KIB"])
+frac = int(os.environ["FRAG_FRAC"])
 small_total = int(os.environ["FRAG_SMALL_TOTAL_MIB"]) * 1024 * 1024
 
 def free_bytes():
     st = os.statvfs(mp)
     return st.f_bavail * st.f_frsize
 
-# 1. Consume the bulk of the volume with one big file, leaving only the
-#    region that will become the hole field.
+# 1. Consume the bulk of the volume, leaving only the future hole field.
 big = os.path.join(mp, ".bigfill")
 chunk = b"\xC3" * (4 * 1024 * 1024)
 with open(big, "wb") as fh:
@@ -129,7 +150,7 @@ with open(big, "wb") as fh:
             break
 os.sync()
 
-# 2. Fill the remainder with small files until the volume is full.
+# 2. Fill the remainder with small files until genuinely out of space.
 small_dir = os.path.join(mp, ".smallfill")
 os.makedirs(small_dir, exist_ok=True)
 blob = b"\x5A" * (hole_kib * 1024)
@@ -143,9 +164,17 @@ while True:
         break
 os.sync()
 
-# 3. Punch alternating holes.
+# 3. Free a seeded-random subset rather than every Nth file by name.
+#
+#    Deleting by name parity assumes the filesystem allocated the files in
+#    creation order. ntfs-3g does not guarantee that, and when the assumption
+#    fails the freed space coalesces into large contiguous runs - the opposite
+#    of what this fixture needs. A random subset scatters the holes whatever
+#    the allocation order was. Seeded, so it stays reproducible.
+rng = random.Random(0xF3A6 + hole_kib * 131 + frac)
+victims = [i for i in range(written) if rng.randrange(frac) != 0]
 holes = 0
-for i in range(0, written, 2):
+for i in victims:
     try:
         os.unlink(os.path.join(small_dir, "s%06d" % i))
         holes += 1
@@ -154,14 +183,21 @@ for i in range(0, written, 2):
 os.sync()
 print("    filler=%d holes=%d free=%.1fMiB"
       % (written, holes, free_bytes() / 1048576.0), file=sys.stderr)
-PY
+FRAGPY
 
-    # 4. Write the target into the hole field.
-    mkdir -p "$mp/$(dirname "$rel")"
-    cp "$src/$rel" "$mp/$rel"
-    sync
+        # Write the target into the hole field and see what the allocator did.
+        mkdir -p "$mp/$(dirname "$rel")"
+        cp "$src/$rel" "$mp/$rel"
+        sync
 
-    # 5. Remove the filler. The target stays where it was allocated.
+        layout="$(fragment_check "$img" "$src/$rel")"
+        rc_log "    attempt $attempt produced: $layout"
+        if [[ "$layout" == "fragmented" ]]; then
+            break
+        fi
+    done
+
+    # Remove the filler. The target stays where it was allocated.
     rm -rf "$mp/.smallfill" "$mp/.bigfill"
     sync
 }
@@ -351,7 +387,7 @@ build_basic() {
     # so it can be forced into non-contiguous runs.
     populate_corpus "$mp" "$CORPUS_DIR" "$FRAG_TARGET"
     rc_log "copied $(( $(find "$CORPUS_DIR" -type f | wc -l) - 1 )) files"
-    fragment_one "$mp" "$CORPUS_DIR" "$FRAG_TARGET"
+    fragment_one "$mp" "$CORPUS_DIR" "$FRAG_TARGET" "$img"
 
     # Names must survive the write before the ground truth can claim them.
     verify_populated "$mp" "$CORPUS_DIR" \
