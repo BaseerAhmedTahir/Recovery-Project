@@ -37,6 +37,10 @@ struct Expected {
     image_sha256: String,
     fragmented_path: Option<String>,
     fragmented_layout: Option<String>,
+    /// The volume starts at a partition offset rather than at LBA 0. The
+    /// ntfs-3g fixtures are bare filesystems; anything Windows formats through
+    /// diskpart gets a partition table whether you asked for one or not.
+    partitioned: bool,
 }
 
 /// Shared lock over the fixtures directory; see rc-device's immutability test.
@@ -78,6 +82,7 @@ fn load_expected(name: &str) -> Option<(PathBuf, Expected)> {
             fragmented_layout: v["fragmented_file"]["layout"]
                 .as_str()
                 .map(|s| s.to_string()),
+            partitioned: v["partitioned"].as_bool().unwrap_or(false),
         },
     ))
 }
@@ -148,8 +153,30 @@ fn grade(name: &str) -> Option<Score> {
     }
 
     let device = rc_device::open(&img, None).expect("open fixture");
-    let (fs, result) = rc_fs::scan_volume(device.as_ref(), 0)
-        .unwrap_or_else(|e| panic!("{name}: scan failed: {e}"));
+
+    // A partitioned image needs the partition found first. Doing this through
+    // rc-partition rather than hard-coding the offset means the graded run
+    // exercises discovery too: if the table were misread the volume would not
+    // be found at all, which is a louder failure than a silently wrong score.
+    let offset = if exp.partitioned {
+        let tbl = rc_partition::discover(device.as_ref(), &Default::default())
+            .unwrap_or_else(|e| panic!("{name}: partition discovery failed: {e}"));
+        let part = tbl.supported().next().unwrap_or_else(|| {
+            panic!(
+                "{name}: no partition holding a supported filesystem; found {:?}",
+                tbl.partitions
+                    .iter()
+                    .map(|p| (p.index, p.start.0, p.fs))
+                    .collect::<Vec<_>>()
+            )
+        });
+        part.start.0 * device.sector_size().get() as u64
+    } else {
+        0
+    };
+
+    let (fs, result) = rc_fs::scan_volume(device.as_ref(), offset)
+        .unwrap_or_else(|e| panic!("{name}: scan failed at offset {offset}: {e}"));
 
     // The source must be untouched by parsing, same invariant as Milestone 1.
     drop(device);
@@ -288,6 +315,96 @@ fn ntfs_recovers_deleted_entries() {
         "NTFS name accuracy {:.1}% is below the {:.0}% bar",
         s.name_accuracy() * 100.0,
         BAR * 100.0
+    );
+}
+
+/// The same corpus, written by a different NTFS implementation.
+///
+/// Every other NTFS fixture is formatted and populated by ntfs-3g through one
+/// script. However large that corpus grows it stays a single sample: a
+/// systematic difference that Microsoft's driver produces and ntfs-3g never
+/// does - an $ATTRIBUTE_LIST layout, an index-allocation pattern, a
+/// resident-attribute threshold - cannot be surfaced by it at any size,
+/// because the errors are correlated. This image was formatted and written by
+/// the Windows NTFS driver instead. See docs/LIMITATIONS.md section 2.7.
+#[test]
+fn ntfs_from_the_microsoft_driver_recovers_deleted_entries() {
+    let Some(s) = grade("ntfs-windows") else {
+        eprintln!(
+            "note: ntfs-windows fixture not built; run scripts/make-windows-fixture.ps1 \
+             from an Administrator PowerShell on Windows"
+        );
+        return;
+    };
+    report("ntfs-windows", &s);
+    assert!(
+        s.name_accuracy() >= BAR,
+        "NTFS (Microsoft driver) name accuracy {:.1}% is below the {:.0}% bar",
+        s.name_accuracy() * 100.0,
+        BAR * 100.0
+    );
+}
+
+/// Compare the two NTFS samples against each other.
+///
+/// Agreement is reassuring. Disagreement is the more valuable result, because
+/// it is a finding about the parser rather than about the fixture generator -
+/// so this reports what differs rather than only whether both cleared the bar.
+///
+/// Note what cannot be compared: LIMITATIONS section 2.7 records that 58 of the
+/// 315 corpus files differ in content between the two images, because their
+/// sqlite files were written by different SQLite versions and their docx
+/// members deflated by different zlib versions. Names, paths and sizes are
+/// identical across both, and those are what this test compares.
+#[test]
+fn the_two_ntfs_drivers_agree_on_what_was_deleted() {
+    let (Some(a), Some(b)) = (grade("ntfs-basic"), grade("ntfs-windows")) else {
+        eprintln!("note: both NTFS fixtures are needed for the cross-driver comparison");
+        return;
+    };
+
+    eprintln!(
+        "\ncross-driver comparison\n  ntfs-3g  : name {:.1}%  path {:.1}%  size {}/{}\n  \
+         Microsoft: name {:.1}%  path {:.1}%  size {}/{}",
+        a.name_accuracy() * 100.0,
+        a.path_accuracy() * 100.0,
+        a.size_hits,
+        a.expected_deleted,
+        b.name_accuracy() * 100.0,
+        b.path_accuracy() * 100.0,
+        b.size_hits,
+        b.expected_deleted,
+    );
+
+    // The total entry counts differ by an order of magnitude and that is
+    // expected, not a discrepancy to explain away: build_fixtures.sh forces
+    // fragmentation by writing thousands of filler files and deleting them, so
+    // ntfs-basic carries all of those as deleted MFT records. The Windows
+    // script does not fragment, so its count is just the corpus plus metadata -
+    // 315 files, 23 directories and 14 NTFS metafiles.
+    //
+    // Files one driver's image gave up and the other's did not. Either
+    // direction is a genuine finding: it means the parser depends on a layout
+    // choice rather than on the format.
+    let only_in_basic: Vec<&String> = b.missing.iter().filter(|m| !a.missing.contains(m)).collect();
+    let only_in_windows: Vec<&String> =
+        a.missing.iter().filter(|m| !b.missing.contains(m)).collect();
+    for m in &only_in_basic {
+        eprintln!("  RECOVERED FROM ntfs-3g BUT NOT FROM THE MICROSOFT DRIVER: {m}");
+    }
+    for m in &only_in_windows {
+        eprintln!("  RECOVERED FROM THE MICROSOFT DRIVER BUT NOT FROM ntfs-3g: {m}");
+    }
+
+    assert_eq!(
+        a.expected_deleted, b.expected_deleted,
+        "the two fixtures do not describe the same number of deleted files"
+    );
+    assert!(
+        only_in_basic.is_empty() && only_in_windows.is_empty(),
+        "the parser disagrees between NTFS implementations, which is a parser bug \
+         rather than a fixture one: {} file(s) recoverable from only one of them",
+        only_in_basic.len() + only_in_windows.len()
     );
 }
 
