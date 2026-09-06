@@ -20,10 +20,12 @@
 pub(crate) mod crc32;
 pub mod error;
 pub mod prefilter;
+pub mod scan;
 pub mod signature;
 pub mod validate;
 
 pub use error::{CarveError, Result};
 pub use prefilter::{Prefilter, ScanIndex};
+pub use scan::{scan, Candidate, ScanOptions, ScanResult, ScanStats};
 pub use signature::{Category, Signature, SignatureDb};
 pub use validate::{Outcome, Status};

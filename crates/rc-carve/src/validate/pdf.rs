@@ -46,12 +46,20 @@ pub fn validate(d: &[u8]) -> Outcome {
     if eofs.is_empty() {
         // No trailer at all. Still a PDF if it has objects; just not a whole
         // one. Requiring "obj" keeps random data out.
-        return if memmem::find(&d[..bound.min(d.len())], b" obj").is_some() {
-            Outcome::partial(bound as u64, "no %%EOF trailer; the file is truncated")
-                .with("version", version)
-                .with("truncated", true)
-        } else {
-            Outcome::reject("no %%EOF and no object definitions")
+        // Report the end of the last complete object, not `bound` - bound is
+        // the next header or the end of the buffer, and the end of the buffer
+        // is the caller's window size rather than anything about this file.
+        let justified = memmem::rfind(&d[..bound.min(d.len())], b"endobj")
+            .map(|p| (p + b"endobj".len()) as u64);
+        return match justified {
+            Some(end) => Outcome::partial(
+                end,
+                "no %%EOF trailer; the file is truncated, so this length runs to the \
+                 last complete object rather than to the file's real end",
+            )
+            .with("version", version)
+            .with("truncated", true),
+            None => Outcome::reject("no %%EOF and no complete object definitions"),
         };
     }
 

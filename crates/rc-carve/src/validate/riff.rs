@@ -141,11 +141,14 @@ fn validate_form(
     }
 
     if declared_total > d.len() as u64 || walked_past_end {
+        // `at` is where the chunk walk stopped, which the data justifies.
+        // `d.len()` would be the caller's buffer size.
         return evidence(
             Outcome::partial(
-                d.len() as u64,
+                (at as u64).min(d.len() as u64),
                 format!(
-                    "declares {declared_total} bytes but only {} are available; truncated",
+                    "declares {declared_total} bytes but only {} are available; \
+                     truncated, so this length runs to the last complete chunk",
                     d.len()
                 ),
             )
@@ -270,7 +273,8 @@ mod tests {
         let w = wav();
         let out = validate_wav(&w[..w.len() - 40]);
         assert_eq!(out.status, Status::Partial, "{}", out.detail);
-        assert_eq!(out.length, (w.len() - 40) as u64);
+        // The length is what the chunk walk justified, not the buffer size.
+        assert!(out.length <= (w.len() - 40) as u64);
     }
 
     #[test]

@@ -70,6 +70,18 @@ pub struct Outcome {
     /// later without re-parsing the file. SPEC.md section 5.7 asks for the
     /// input vector to be inspectable rather than baked into a number.
     pub evidence: Vec<(&'static str, String)>,
+    /// Whether `length` is the file's real size or merely a floor.
+    ///
+    /// A complete file establishes its own length. A damaged one usually does
+    /// not, and then `length` is the furthest point the structure justifies -
+    /// useful, but not an extent to judge other candidates against. The
+    /// exception is a format that states its size in a header it still has:
+    /// a truncated BMP knows exactly how big it was meant to be.
+    ///
+    /// The scanner only lets an established length suppress overlapping
+    /// candidates. Getting this wrong cost 202 of 228 files on the
+    /// quick-formatted fixture, so it is a field rather than a convention.
+    pub length_established: bool,
 }
 
 impl Outcome {
@@ -80,6 +92,9 @@ impl Outcome {
             detail: String::new(),
             refined_ext: None,
             evidence: Vec::new(),
+            // A structurally complete file walked from its first byte to its
+            // last; that length is the file's own.
+            length_established: true,
         }
     }
 
@@ -90,6 +105,8 @@ impl Outcome {
             detail: detail.into(),
             refined_ext: None,
             evidence: Vec::new(),
+            // A floor unless the validator says otherwise via `established`.
+            length_established: false,
         }
     }
 
@@ -100,7 +117,15 @@ impl Outcome {
             detail: detail.into(),
             refined_ext: None,
             evidence: Vec::new(),
+            length_established: false,
         }
+    }
+
+    /// Mark a `Partial` length as the file's real size, known from a header
+    /// that survived even though the data did not.
+    pub fn established(mut self) -> Outcome {
+        self.length_established = true;
+        self
     }
 
     pub fn with_ext(mut self, ext: &'static str) -> Outcome {
@@ -249,6 +274,116 @@ mod tests {
     fn unknown_ids_are_none_rather_than_a_failure() {
         assert!(validate("no_such_validator", b"anything").is_none());
         assert!(validate("none", b"anything").is_none());
+    }
+
+    /// No validator may report a length that is really just the size of the
+    /// buffer it was handed.
+    ///
+    /// This is the general form of a bug that destroyed recall on the
+    /// quick-formatted fixture. The ZIP validator, given a truncated archive,
+    /// returned `d.len()` as the length. Carving hands a validator a fixed
+    /// window, so that number was the window size - 16 MiB - and a candidate
+    /// carrying a length it had not earned suppressed every real file inside
+    /// that span. Recall went from 228 of 228 to 26.
+    ///
+    /// The test: feed each validator a prefix of a real file with three
+    /// different amounts of trailing padding. Whatever the verdict, the
+    /// reported length must not move with the padding. A length that tracks
+    /// the buffer size is a fact about the caller, not about the file.
+    #[test]
+    fn no_validator_reports_the_buffer_size_as_a_length() {
+        // Deliberately truncated samples: each is the front of something real,
+        // cut so no validator can find a proper end.
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("jpeg", {
+                let mut v = vec![0xFF, 0xD8];
+                v.extend_from_slice(&[
+                    0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01,
+                    0x11, 0x00,
+                ]);
+                v.extend_from_slice(&[
+                    0xFF, 0xDA, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x3F, 0x00,
+                ]);
+                v.extend_from_slice(&[0x11; 32]);
+                v
+            }),
+            ("png", {
+                let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+                let ihdr = [0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0];
+                v.extend_from_slice(&13u32.to_be_bytes());
+                v.extend_from_slice(b"IHDR");
+                v.extend_from_slice(&ihdr);
+                v.extend_from_slice(&crate::crc32::crc32_parts(&[b"IHDR", &ihdr]).to_be_bytes());
+                let idat = [0x78u8, 0x9C, 0x63, 0x00];
+                v.extend_from_slice(&(idat.len() as u32).to_be_bytes());
+                v.extend_from_slice(b"IDAT");
+                v.extend_from_slice(&idat);
+                v.extend_from_slice(&crate::crc32::crc32_parts(&[b"IDAT", &idat]).to_be_bytes());
+                v
+            }),
+            ("pdf", b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog >>
+endobj
+".to_vec()),
+            ("zip", {
+                let mut v = b"PK".to_vec();
+                v.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                v.extend_from_slice(&0u32.to_le_bytes());
+                v.extend_from_slice(&5u32.to_le_bytes());
+                v.extend_from_slice(&5u32.to_le_bytes());
+                v.extend_from_slice(&5u16.to_le_bytes());
+                v.extend_from_slice(&0u16.to_le_bytes());
+                v.extend_from_slice(b"a.txt");
+                v.extend_from_slice(b"hello");
+                v
+            }),
+            ("mp4", {
+                let mut v = 24u32.to_be_bytes().to_vec();
+                v.extend_from_slice(b"ftypisom   isom");
+                v.extend_from_slice(&64u32.to_be_bytes());
+                v.extend_from_slice(b"moov");
+                v.extend_from_slice(&[0x11; 56]);
+                v
+            }),
+            ("riff_wav", {
+                let mut v = b"RIFF".to_vec();
+                v.extend_from_slice(&0xFFFF_0000u32.to_le_bytes());
+                v.extend_from_slice(b"WAVE");
+                v.extend_from_slice(b"fmt ");
+                v.extend_from_slice(&16u32.to_le_bytes());
+                v.extend_from_slice(&[1, 0, 2, 0, 0x44, 0xAC, 0, 0, 0x10, 0xB1, 2, 0, 4, 0, 16, 0]);
+                v.extend_from_slice(b"data");
+                v.extend_from_slice(&0x00FF_0000u32.to_le_bytes());
+                v.extend_from_slice(&[0x22; 64]);
+                v
+            }),
+        ];
+
+        let mut offenders = Vec::new();
+        for (id, head) in &cases {
+            let mut seen: Vec<(usize, u64, Status)> = Vec::new();
+            for pad in [0usize, 4096, 256 * 1024] {
+                let mut v = head.clone();
+                v.resize(head.len() + pad, 0);
+                let out = validate(id, &v).expect("validator exists");
+                seen.push((pad, out.length, out.status));
+            }
+            let first = seen[0].1;
+            if seen.iter().any(|(_, l, _)| *l != first) {
+                offenders.push(format!("{id}: length varies with padding: {seen:?}"));
+            }
+            // And it must never exceed the real prefix, which is all the file
+            // there ever was.
+            if first > head.len() as u64 {
+                offenders.push(format!(
+                    "{id}: claimed {first} bytes from a {}-byte prefix",
+                    head.len()
+                ));
+            }
+        }
+        assert!(offenders.is_empty(), "{}", offenders.join("
+"));
     }
 
     /// Every validator must survive arbitrary input without panicking. These

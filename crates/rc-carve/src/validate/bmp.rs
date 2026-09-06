@@ -101,13 +101,21 @@ pub fn validate(d: &[u8]) -> Outcome {
     };
 
     if (file_size as u64) > d.len() as u64 {
-        return evidence(Outcome::partial(
-            d.len() as u64,
-            format!(
-                "declares {file_size} bytes but only {} are available; truncated",
-                d.len()
-            ),
-        ));
+        // BMP is the one format here that still knows its own size when the
+        // data is gone: the length lives in the file header, which survived.
+        // So this is Partial - we do not have all of it - with an *established*
+        // length, unlike a truncated JPEG whose real end is unknowable.
+        return evidence(
+            Outcome::partial(
+                file_size as u64,
+                format!(
+                    "the header declares {file_size} bytes but only {} are available; \
+                     truncated, though the declared size is still trustworthy",
+                    d.len()
+                ),
+            )
+            .established(),
+        );
     }
 
     evidence(Outcome::valid(file_size as u64))
@@ -197,11 +205,13 @@ mod tests {
     }
 
     #[test]
-    fn a_bmp_cut_short_is_partial() {
+    fn a_bmp_cut_short_keeps_the_size_its_header_declares() {
         let b = bmp(32, 32, 24);
         let out = validate(&b[..b.len() / 2]);
         assert_eq!(out.status, Status::Partial, "{}", out.detail);
-        assert_eq!(out.length, (b.len() / 2) as u64);
+        // Unlike the other formats, a truncated BMP still knows how big it was.
+        assert_eq!(out.length, b.len() as u64);
+        assert!(out.length_established, "the header size is trustworthy");
     }
 
     #[test]

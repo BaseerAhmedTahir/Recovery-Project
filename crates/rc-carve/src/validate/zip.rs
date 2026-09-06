@@ -69,16 +69,50 @@ pub fn validate(d: &[u8]) -> Outcome {
     // than a chance PK\x03\x04.
     let locals = memmem::find_iter(d, LOCAL).count();
     if locals >= 1 && plausible_local_header(d) {
+        // Report the extent the local-header chain actually justifies, NOT
+        // `d.len()`. Returning the size of the buffer means returning the
+        // caller's window size, which is a fact about the scanner rather than
+        // about the file - and a candidate carrying a 16 MiB length it did not
+        // earn will swallow every real file inside that span.
+        let extent = walked_local_extent(d);
         Outcome::partial(
-            d.len() as u64,
+            extent,
             "no end-of-central-directory record; the archive is truncated and its \
-             member index is gone",
+             member index is gone, so this length is what the local headers \
+             justify rather than the file's real size",
         )
         .with("local_headers", locals)
         .with("truncated", true)
     } else {
         Outcome::reject("no central directory and the local header is not plausible")
     }
+}
+
+/// How far the chain of local file headers can be followed.
+///
+/// Each local header declares its member's compressed size, so a run of them
+/// gives a lower bound on the archive's size that comes from the data rather
+/// than from how much of it we happened to read. Stops at the first header that
+/// does not add up; a member written with a data descriptor has a zero size
+/// here and ends the walk, which is the conservative direction.
+fn walked_local_extent(d: &[u8]) -> u64 {
+    let mut at = 0usize;
+    let mut last_good = 0u64;
+    while at + 30 <= d.len() && d[at..].starts_with(LOCAL) {
+        let csize = le32(d, at + 18).unwrap_or(0) as usize;
+        let name_len = le16(d, at + 26).unwrap_or(0) as usize;
+        let extra_len = le16(d, at + 28).unwrap_or(0) as usize;
+        let next = at + 30 + name_len + extra_len + csize;
+        if csize == 0 || next > d.len() || next <= at {
+            // Header present but its body is not, or its size is unknown.
+            // Credit the header itself and stop.
+            last_good = (at + 30 + name_len + extra_len).min(d.len()) as u64;
+            break;
+        }
+        last_good = next as u64;
+        at = next;
+    }
+    last_good
 }
 
 struct Eocd {
@@ -427,6 +461,40 @@ mod tests {
         let out = validate(&z[..cut]);
         assert_eq!(out.status, Status::Partial, "{}", out.detail);
         assert!(out.detail.contains("truncated"), "{}", out.detail);
+        // The length must come from the local-header chain, not from how much
+        // data the caller happened to hand over.
+        assert!(out.length > 0 && out.length <= cut as u64);
+    }
+
+    /// The bug that destroyed recall on the quick-formatted fixture: a
+    /// truncated archive reported the caller's buffer size as its length, so
+    /// one spurious PK\x03\x04 claimed the whole validation window.
+    #[test]
+    fn a_truncated_archive_does_not_report_the_buffer_size_as_its_length() {
+        let z = docx();
+        let cut = memmem::find(&z, CENTRAL).unwrap();
+        let head = &z[..cut];
+
+        // Same prefix, three different amounts of trailing padding. The
+        // reported length must not move.
+        let mut lengths = Vec::new();
+        for pad in [0usize, 4096, 1 << 20] {
+            let mut v = head.to_vec();
+            v.resize(head.len() + pad, 0);
+            let out = validate(&v);
+            assert_eq!(out.status, Status::Partial, "{}", out.detail);
+            lengths.push(out.length);
+        }
+        assert!(
+            lengths.iter().all(|l| *l == lengths[0]),
+            "length changed with the size of the buffer: {lengths:?}"
+        );
+        assert!(
+            lengths[0] <= head.len() as u64,
+            "claimed {} bytes from a {}-byte archive prefix",
+            lengths[0],
+            head.len()
+        );
     }
 
     /// ZIP's per-member CRC is the only content-level check the format offers,

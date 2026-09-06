@@ -49,6 +49,11 @@ pub fn validate(d: &[u8]) -> Outcome {
     let mut restarts = 0u64;
     let mut restarts_out_of_order = 0u64;
     let mut segments = 0u64;
+    // The furthest point the structure justifies: the end of the last segment
+    // walked, or the last restart marker inside the scan. Reporting `d.len()`
+    // instead would report the caller's buffer size, which for a carve is the
+    // validation window and not a property of the file at all.
+    let mut verified_to = 2usize;
 
     loop {
         // Fill bytes: a stream may pad with any number of FFs before a marker.
@@ -57,7 +62,12 @@ pub fn validate(d: &[u8]) -> Outcome {
             j += 1;
         }
         if j >= d.len() {
-            return truncated(i, saw_sof, saw_sos, "ran out of data looking for a marker");
+            return truncated(
+                verified_to,
+                saw_sof,
+                saw_sos,
+                "ran out of data looking for a marker",
+            );
         }
         // We must have crossed at least one FF to be at a marker at all.
         if j == i {
@@ -115,7 +125,12 @@ pub fn validate(d: &[u8]) -> Outcome {
 
         // Everything else carries a two-byte length that includes itself.
         let Some(seg_len) = be16(d, i) else {
-            return truncated(i, saw_sof, saw_sos, "segment length field is past the end");
+            return truncated(
+                verified_to,
+                saw_sof,
+                saw_sos,
+                "segment length field is past the end",
+            );
         };
         let seg_len = seg_len as usize;
         if seg_len < 2 {
@@ -125,9 +140,15 @@ pub fn validate(d: &[u8]) -> Outcome {
             return desync(i, saw_sof, saw_sos);
         };
         if seg_end > d.len() {
-            return truncated(i, saw_sof, saw_sos, "a segment extends past the available data");
+            return truncated(
+                verified_to,
+                saw_sof,
+                saw_sos,
+                "a segment extends past the available data",
+            );
         }
         segments += 1;
+        verified_to = seg_end;
 
         if is_sof(marker) {
             saw_sof = true;
@@ -161,7 +182,7 @@ pub fn validate(d: &[u8]) -> Outcome {
             loop {
                 if k + 1 >= d.len() {
                     return truncated(
-                        d.len(),
+                        verified_to,
                         saw_sof,
                         saw_sos,
                         "entropy-coded data runs to the end without EOI",
@@ -183,6 +204,9 @@ pub fn validate(d: &[u8]) -> Outcome {
                         }
                         expect = (b - RST_FIRST + 1) % 8;
                         k += 2;
+                        // A restart marker is a real structural landmark, so
+                        // everything up to it is justified.
+                        verified_to = k;
                     }
                     _ => break,
                 }

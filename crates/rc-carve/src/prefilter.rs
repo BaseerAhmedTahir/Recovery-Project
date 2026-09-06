@@ -208,11 +208,15 @@ impl Prefilter {
 pub struct ScanIndex<'a> {
     pub prefilter: Prefilter,
     /// Indexed by leading byte value. Each entry lists `(signature, offset of
-    /// the leading byte within the file)`.
-    by_byte: Vec<Vec<(&'a Signature, usize)>>,
+    /// the leading byte within the file, position in the source slice)`.
+    ///
+    /// The slice position is carried so the scanner's hot loop can record which
+    /// signature matched with a `usize` instead of resolving a pointer against
+    /// all 44 on every hit.
+    by_byte: Vec<Vec<(&'a Signature, usize, usize)>>,
     /// Signatures whose first byte is masked and so cannot be prefiltered.
     /// These must be compared at every prefilter hit regardless of the byte.
-    unfiltered: Vec<&'a Signature>,
+    unfiltered: Vec<(&'a Signature, usize)>,
     max_span: usize,
 }
 
@@ -225,18 +229,18 @@ impl<'a> ScanIndex<'a> {
         sigs: impl Iterator<Item = &'a Signature>,
         max_span: usize,
     ) -> ScanIndex<'a> {
-        let mut by_byte: Vec<Vec<(&Signature, usize)>> = vec![Vec::new(); 256];
+        let mut by_byte: Vec<Vec<(&Signature, usize, usize)>> = vec![Vec::new(); 256];
         let mut unfiltered = Vec::new();
         let mut bytes = Vec::new();
 
-        for s in sigs {
+        for (i, s) in sigs.enumerate() {
             match s.prefilter_byte() {
                 Some((b, off)) => {
-                    by_byte[b as usize].push((s, off));
+                    by_byte[b as usize].push((s, off, i));
                     bytes.push(b);
                 }
                 // A masked leading byte cannot be searched for exactly.
-                None => unfiltered.push(s),
+                None => unfiltered.push((s, i)),
             }
         }
 
@@ -270,21 +274,27 @@ impl<'a> ScanIndex<'a> {
     ///
     /// `hit` is the position of the *leading byte*, which for a container
     /// format is not the start of the file - MP4's `ftyp` sits at offset 4,
-    /// after the box size - so this yields the candidate's start offset too.
+    /// after the box size - so this yields the candidate's start offset too,
+    /// along with the signature's position in the slice this index was built
+    /// from.
     pub fn candidates_at<'b>(
         &'b self,
         hay: &'b [u8],
         hit: usize,
-    ) -> impl Iterator<Item = (&'a Signature, usize)> + 'b {
+    ) -> impl Iterator<Item = (&'a Signature, usize, usize)> + 'b {
         let b = hay.get(hit).copied().unwrap_or(0);
         self.by_byte[b as usize]
             .iter()
             .copied()
-            .chain(self.unfiltered.iter().map(|s| (*s, s.header_offset)))
-            .filter_map(move |(s, off)| {
+            .chain(
+                self.unfiltered
+                    .iter()
+                    .map(|(s, i)| (*s, s.header_offset, *i)),
+            )
+            .filter_map(move |(s, off, i)| {
                 // The candidate begins `off` bytes before its leading byte.
                 let start = hit.checked_sub(off)?;
-                s.matches(hay.get(start..)?).then_some((s, start))
+                s.matches(hay.get(start..)?).then_some((s, start, i))
             })
     }
 }
@@ -396,7 +406,7 @@ mod tests {
 
         let found: Vec<_> = idx
             .candidates_at(&buf, 4)
-            .map(|(s, start)| (s.id.clone(), start))
+            .map(|(s, start, _)| (s.id.clone(), start))
             .collect();
         assert!(
             found.iter().any(|(id, start)| id == "mp4" && *start == 0),
