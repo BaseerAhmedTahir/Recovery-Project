@@ -168,6 +168,39 @@ minutes. A full `build_fixtures.sh` run takes roughly ten.
 
 ---
 
+### 2.7 The corpus is reproducible per toolchain, not across toolchains
+
+`make_corpus.py` is fully deterministic on a given machine: two consecutive
+runs produce byte-identical output for all 315 files, and a run today matched
+the manifest that populated the Windows VHD earlier. It is *not* reproducible
+across toolchains. Comparing the WSL-built `ntfs-basic` corpus against the
+Windows-built `ntfs-windows` corpus, 58 of 315 files differ in content while
+every one of them has an identical size:
+
+| Kind | Files differing | Cause |
+|---|---|---|
+| `sqlite` | 16 of 16 | `SQLITE_VERSION_NUMBER` is stored at header offset 96. WSL had SQLite 3.46.1, Windows had 3.50.4. Page size, page count and freelist count are identical in both. |
+| `docx` | 42 of 42 | DEFLATE output differs between zlib versions. The ZIP timestamps are already pinned to a fixed DOS epoch, so the timestamps are not the cause. |
+
+Consequences, in order of how easy each is to get wrong:
+
+1. **Each `expected.json` is only ground truth for its own image.** They are
+   generated together and are internally consistent, so byte-exact recovery
+   checks remain valid per image. Never validate one image against another
+   image's manifest.
+2. **A cross-image comparison must be made on paths, sizes, states and
+   structure - not on content hashes** for the `sqlite` and `docx` files.
+3. **The `.gitignore` comment calling fixtures "reproducible" is true only on
+   the machine that built them.** Regenerating a manifest to repair a lost one
+   works only if the same Python, zlib and SQLite versions are still installed.
+
+This is not a defect to fix. Format diversity is the point of having an
+independent sample: the Windows fixture genuinely contains SQLite databases
+written by a different library version and ZIP members deflated by a different
+compressor, which is more coverage than a bit-identical copy would give.
+
+---
+
 ## 3. Functional limitations by design
 
 ### 3.1 Not yet implemented
@@ -288,6 +321,10 @@ Byte-level recovery is what Milestones 3 and 4 grade.
   meaningless for a signature carver; see `docs/PROGRESS.md`.
 - **The candidate index has never been under memory pressure.** The 2 GB RSS
   ceiling from Milestone 3 cannot be tested against 512 MiB fixtures.
+- **No RIFF fixture.** The corpus has no WAV or AVI file, so the `riff_wav`,
+  `riff_avi` and `riff_webp` validators can only be unit-tested against
+  hand-built byte vectors, never against a file some other encoder produced.
+  The same applies to BMP, GIF and TIFF.
 
 ---
 

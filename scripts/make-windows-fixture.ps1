@@ -112,8 +112,16 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 Step "Generating corpus with $py"
 if (Test-Path (Ext $work)) { [System.IO.Directory]::Delete((Ext $work), $true) }
 $manifest = Join-Path $env:TEMP 'rc-wincorpus.json'
-& $py $corpusPy $work > $manifest
+# Deliberately NOT "> $manifest". Windows PowerShell 5.1's redirection encoding
+# depends on the host: with a profile loaded it wrote UTF-8 with a BOM, and
+# under -NoProfile - which is how this script is actually invoked - it wrote
+# UTF-16LE, which the ground-truth reader could not decode. Write the bytes
+# ourselves so the encoding is a property of this script rather than of
+# whatever shell happened to start it.
+$manifestLines = & $py $corpusPy $work
 if ($LASTEXITCODE -ne 0) { Fail "corpus generation failed" }
+[System.IO.File]::WriteAllLines($manifest, [string[]]$manifestLines,
+                                (New-Object System.Text.UTF8Encoding $false))
 $deleted = @(& $py $corpusPy --deleted-set)
 try { [Console]::OutputEncoding = $prevOutEnc } catch {}
 
@@ -288,7 +296,12 @@ print("    deleted=%d present=%d" % (doc["expect"]["deleted_count"],
                                      doc["expect"]["present_count"]))
 '@ | Set-Content -Path $gt -Encoding utf8
 & $py $gt
+# $ErrorActionPreference = 'Stop' does not apply to a native executable's exit
+# code, so without this the script printed "Done:" after the ground truth had
+# failed to write - a fixture with no expected.json, reported as a success.
+if ($LASTEXITCODE -ne 0) { Fail "writing ground truth failed; $img has no expected.json and must not be used" }
 Remove-Item Env:\RC_MANIFEST, Env:\RC_IMG, Env:\RC_DELETED -ErrorAction SilentlyContinue
+if (-not (Test-Path $expected)) { Fail "ground truth reported success but $expected does not exist" }
 
 if (Test-Path (Ext $work)) { [System.IO.Directory]::Delete((Ext $work), $true) }
 Write-Host ""
