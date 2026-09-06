@@ -32,6 +32,7 @@ import math
 import os
 import random
 import sqlite3
+import subprocess
 import struct
 import sys
 import tempfile
@@ -852,6 +853,55 @@ def build(outdir, items):
     return manifest
 
 
+def provenance():
+    """The toolchain that produced this corpus.
+
+    This is part of the ground truth, not decoration. The generator is
+    byte-for-byte deterministic on one toolchain and NOT across toolchains, so
+    a manifest is only valid for an image built by the same tools. Two fields
+    are the reason:
+
+    * ``sqlite_library`` - SQLite writes SQLITE_VERSION_NUMBER at header offset
+      96 of every database file. WSL had 3.46.1 and Windows had 3.50.4, so all
+      16 .sqlite files differ in content at identical size.
+    * ``zlib`` - DEFLATE output varies between zlib versions, so all 42 .docx
+      files differ, again at identical size.
+
+    Together those are 58 of 315 files. Without this block recorded, pairing a
+    regenerated manifest with an image built elsewhere produces 58 silently
+    wrong hashes; with it, the mismatch is visible. See docs/LIMITATIONS.md
+    section 2.7.
+    """
+    import platform
+    import sqlite3
+    import zlib
+
+    with open(os.path.abspath(__file__), "rb") as fh:
+        gen_sha = hashlib.sha256(fh.read()).hexdigest()
+
+    commit = None
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "HEAD"],
+            capture_output=True, timeout=10, check=False,
+        )
+        if r.returncode == 0:
+            commit = r.stdout.decode("ascii", "replace").strip()
+    except Exception:
+        pass
+
+    return {
+        "python": sys.version.split()[0],
+        "sqlite_library": sqlite3.sqlite_version,
+        "zlib": zlib.ZLIB_VERSION,
+        "zlib_runtime": zlib.ZLIB_RUNTIME_VERSION,
+        "system": platform.system(),
+        "platform": platform.platform(),
+        "make_corpus_sha256": gen_sha,
+        "git_commit": commit,
+    }
+
+
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     flags = [a for a in argv[1:] if a.startswith("--")]
@@ -866,6 +916,10 @@ def main(argv):
         for p in DELETED_SET:
             sys.stdout.buffer.write(p.encode("utf-8") + b"\n")
         return 0
+    if "--provenance" in flags:
+        json.dump(provenance(), sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
     if "--fragment-target" in flags:
         sys.stdout.buffer.write(FRAGMENT_TARGET.encode("utf-8") + b"\n")
         return 0
@@ -879,6 +933,7 @@ def main(argv):
             "usage: make_corpus.py [--set=basic|frag] OUTDIR\n"
             "       make_corpus.py --deleted-set\n"
             "       make_corpus.py --fragment-target\n"
+            "       make_corpus.py --provenance\n"
         )
         return 2
     outdir = args[0]

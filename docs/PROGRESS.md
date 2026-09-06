@@ -317,19 +317,47 @@ Measured against the 315-file corpus (`crates/rc-carve/tests/corpus.rs`):
 The 87 `text` and `binary` corpus files are the negative control: they are not
 any carvable format, and all ten validators reject every one of them.
 
-**How much this proves, honestly.** The docx and sqlite results are genuinely
-independent evidence: those files come from Python's `zipfile` and `sqlite3`,
-which this crate had no hand in. The jpeg, png, pdf and mp4 results are weaker,
-because the corpus builds those with hand-written encoders in
-`make_corpus.py` - the encoder and validator were written from opposite
-directions, but a shared misreading of a spec would not be caught. Real files
-from real cameras and real word processors remain untested, and that gap
-closes only against actual recovered media.
+### Every validator is now graded by a foreign encoder
 
-**Not yet validated against a real file of its own kind:** `bmp`, `riff_wav`,
-`riff_avi`, `riff_webp`. The corpus contains no BMP, WAV, AVI or WebP, so those
-four are exercised only by hand-built byte vectors. Recorded in
-`docs/LIMITATIONS.md` section 4.
+The results above were measured against a corpus this project wrote. Eight of
+the ten validators carried correlated-error risk from that: `make_corpus.py`
+builds jpeg, png, pdf and mp4 with hand-written encoders, and bmp, wav, avi and
+webp had no corpus file at all. A misreading of a spec shared between encoder
+and validator produces a clean 100% that means nothing.
+
+`testdata/corpus/make_independent.py` closes it. ImageMagick 7 and ffmpeg 9
+write 29 samples across all eight formats; neither knows this project exists.
+Four formats get two different encoders, so neither tool is a single point of
+agreement.
+
+| Validator | Graded by |
+|---|---|
+| `jpeg` | ImageMagick, ffmpeg |
+| `png` | ImageMagick, ffmpeg |
+| `bmp` | ImageMagick, ffmpeg |
+| `riff_webp` | ImageMagick, ffmpeg |
+| `pdf` | ImageMagick |
+| `mp4` | ffmpeg |
+| `riff_wav` | ffmpeg |
+| `riff_avi` | ffmpeg |
+| `zip` | Python `zipfile` |
+| `sqlite` | Python `sqlite3` |
+
+All 29 accepted with exact lengths on the first run, 261 cross-format trials,
+zero false positives. The variants move the structures the validators actually
+walk rather than just adding files: progressive vs baseline JPEG, interlaced
+and 16-bit PNG, three BMP bit depths, lossy vs lossless WebP, and - confirmed
+by reading the box order back out - an MP4 written `ftyp, moov, free, mdat`
+against three written `ftyp, free, mdat, moov`.
+
+A test asserts this coverage rather than describing it, so the claim cannot
+quietly stop being true. What remains untested is real files from real cameras
+and real word processors, and that closes only against actual recovered media.
+
+These samples are validated as bytes and are **not** in the disk images.
+Validator grading does not need a filesystem; the Milestone 3 carving
+acceptance test does, so folding them into `make_corpus.py` is a prerequisite
+for that and will require rebuilding the fixtures.
 
 ### The fixture generator now retries until fragmentation is real
 
@@ -457,11 +485,30 @@ means anything:
    validator refines docx/xlsx/pptx/jar/apk/epub from the member names.*
 
 Note that items 0 and 0c are settled for the validators but **not for the
-scanner**, which does not exist yet. Validator precision is a per-candidate
-property; scanner precision is a property of how many candidates get generated
-in the first place, and only the second one decides whether a carve of a real
-drive is usable. The acceptance test still has to report both numbers over a
-whole fixture.
+scanner**, which does not exist yet.
+
+**The scanner gets its own denominator, and validator figures must not be
+quoted anywhere near it.** Everything measured so far - 228/228 accepted, 0
+false positives in 2922 cross-format trials, 29/29 on the independent corpus -
+was measured with known file boundaries handed to the validator. The scanner
+faces a completely different distribution:
+
+* every three-byte coincidence in gigabytes of unstructured sectors,
+* compressed streams whose bytes happen to read as `ftyp` boxes or `BM`
+  headers,
+* EXIF thumbnails, which are whole valid JPEGs inside other JPEGs,
+* JPEGs and PNGs inside docx files inside the same volume,
+* and slack space holding fragments of files deleted long before these.
+
+Validator precision does not predict scanner precision. The scanner acceptance
+test therefore reports:
+
+1. **Candidates generated per GB scanned**, by format.
+2. **Where the 111 known-deleted files rank** among those candidates.
+3. **Precision at the recall point** - how many candidates must be examined to
+   reach all 111.
+4. The count surviving validation, as a separate line from the count generated,
+   so the validators' contribution is visible rather than assumed.
 
 Then:
 

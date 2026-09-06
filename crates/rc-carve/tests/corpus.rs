@@ -1,31 +1,26 @@
-//! Validators against the real corpus, not against hand-built byte vectors.
+//! Validators against real files, not against hand-built byte vectors.
 //!
 //! The unit tests in each validator module build their own input, which means
 //! they test the validator against my understanding of the format. That is
 //! circular: a misreading of the spec produces a fixture with the same
-//! misreading, and the test passes.
+//! misreading, and the test passes with a clean 100% that means nothing.
 //!
-//! This suite runs the validators over the 315-file corpus that
-//! `testdata/corpus/make_corpus.py` produces. How much independence that buys
-//! varies by format, and it is worth being exact about it:
+//! Two corpora are used here, and the difference between them matters.
 //!
-//! * **docx and sqlite are genuinely independent.** They come from Python's
-//!   `zipfile` and `sqlite3`, implementations neither this crate nor its
-//!   author had any hand in. Agreement there is real evidence about the
-//!   format rather than about my reading of it.
-//! * **jpeg, png, pdf and mp4 are only half independent.** The corpus builds
-//!   them with hand-written encoders in `make_corpus.py`, so a misreading of
-//!   the spec could in principle live in both the encoder and the validator.
-//!   They are still worth testing against - the encoder and the validator were
-//!   written from opposite directions, and the encoder emits real structures
-//!   like JPEG restart markers and MP4 `stco` chunk offsets - but agreement
-//!   here is weaker evidence than for docx and sqlite.
+//! **The generated corpus** (`testdata/corpus/make_corpus.py`, 315 files) is
+//! the one the disk-image fixtures are built from. Its docx and sqlite files
+//! come from Python's `zipfile` and `sqlite3`, which is real independence. Its
+//! JPEG, PNG, PDF and MP4 files come from encoders written by hand in that
+//! same file, which is not - those are deliberately adversarial (baseline JPEG
+//! with restart markers, MP4 with real `stco` chunk offsets) and worth testing
+//! against, but a shared misreading would not be caught.
 //!
-//! The fixture built by `scripts/make-windows-fixture.ps1` narrows this gap
-//! for the two formats where it can: its sqlite files were written by a
-//! different SQLite version and its docx members deflated by a different zlib
-//! than the ones that built `ntfs-basic.img`. See `docs/LIMITATIONS.md`
-//! section 2.7.
+//! **The independent corpus** (`testdata/corpus/make_independent.py`) closes
+//! that gap. Its files are written by ImageMagick and ffmpeg, neither of which
+//! knows this project exists. It covers the eight formats the generated corpus
+//! could not vouch for - jpeg, png, bmp, webp, pdf, mp4, wav, avi - and gives
+//! four of them two different encoders, so neither tool is a single point of
+//! agreement.
 //!
 //! Three things are measured, and the third is the one that matters most:
 //!
@@ -34,9 +29,16 @@
 //!    size. This is what "byte-exact recovery of contiguous files" in
 //!    Milestone 3 actually reduces to.
 //! 3. **Precision.** Every validator run against a file that is *not* its
-//!    format must reject it. A carver that accepts everything has perfect
-//!    recall and no value, and the `text` and `binary` corpus files - 87 of
-//!    them - are the honest test of that.
+//!    format must reject it.
+//!
+//! **These numbers say nothing about scanner precision.** Everything here is
+//! measured with known file boundaries handed to the validator. The scanner
+//! faces a completely different distribution: every three-byte coincidence in
+//! gigabytes of unstructured sectors, compressed streams that look like `ftyp`
+//! boxes, EXIF thumbnails inside JPEGs, and JPEGs inside docx files on the
+//! same volume. The scanner gets its own denominator - candidates per GB
+//! scanned, and where the real files rank among them - and these figures must
+//! not be quoted near it.
 //!
 //! Following the pattern of the immutability test: this builds what it needs
 //! rather than skipping when it is absent, so it is never silently a no-op.
@@ -54,31 +56,41 @@ fn validator_for(kind: &str) -> Option<&'static str> {
     match kind {
         "jpeg" => Some("jpeg"),
         "png" => Some("png"),
+        "bmp" => Some("bmp"),
         "pdf" => Some("pdf"),
         "docx" => Some("zip"),
         "mp4" => Some("mp4"),
         "sqlite" => Some("sqlite"),
+        "wav" => Some("riff_wav"),
+        "avi" => Some("riff_avi"),
+        "webp" => Some("riff_webp"),
         _ => None,
     }
 }
 
-struct Corpus {
-    dir: PathBuf,
-    /// relative path -> (kind, size)
-    files: BTreeMap<String, (String, u64)>,
+#[derive(Clone)]
+struct Sample {
+    kind: String,
+    size: u64,
+    /// Which program wrote this file. `None` for the generated corpus, whose
+    /// provenance is recorded per-corpus rather than per-file.
+    generator: Option<String>,
 }
 
-/// Generating 315 files takes a noticeable fraction of a minute, and every
-/// test here wants the same corpus, so build it once for the process.
-///
-/// Nothing deletes it afterwards: a `OnceLock` has no destructor, and a test
-/// that removed the shared directory would break whichever test happened to
-/// run after it. The directory name is fixed rather than process-keyed so the
-/// next run reclaims it instead of leaving one behind each time.
-static CORPUS: std::sync::OnceLock<Corpus> = std::sync::OnceLock::new();
+struct Corpus {
+    dir: PathBuf,
+    files: BTreeMap<String, Sample>,
+    /// Human-readable note about where these files came from, printed by the
+    /// tests so a run's output says what it actually measured.
+    provenance: String,
+}
 
-fn corpus() -> &'static Corpus {
-    CORPUS.get_or_init(build_corpus)
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .to_path_buf()
 }
 
 fn python() -> Option<String> {
@@ -90,120 +102,121 @@ fn python() -> Option<String> {
     None
 }
 
-fn build_corpus() -> Corpus {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf();
-    let script = repo.join("testdata").join("corpus").join("make_corpus.py");
-    assert!(
-        script.exists(),
-        "corpus generator missing at {}",
-        script.display()
-    );
+fn run_generator(script: &str, dir: &Path) -> serde_json::Value {
+    let path = workspace_root().join("testdata").join("corpus").join(script);
+    assert!(path.exists(), "generator missing at {}", path.display());
 
     let py = python().unwrap_or_else(|| {
         panic!(
             "Python is required to build the validator corpus and was not found on PATH.\n\
-             This test deliberately does not skip: a validator suite that quietly \
-             stops running is worse than one that fails.\n\
+             This test deliberately does not skip: a validator suite that quietly stops \
+             running is worse than one that fails.\n\
              Install Python 3, or run: {} <outdir>",
-            script.display()
+            path.display()
         )
     });
 
-    let dir = std::env::temp_dir().join("rc-carve-corpus");
-    let _ = std::fs::remove_dir_all(&dir);
-
+    let _ = std::fs::remove_dir_all(dir);
     let out = Command::new(&py)
-        .arg(&script)
-        .arg(&dir)
+        .arg(&path)
+        .arg(dir)
         .output()
-        .expect("run the corpus generator");
+        .unwrap_or_else(|e| panic!("run {}: {e}", path.display()));
     assert!(
         out.status.success(),
-        "corpus generation failed: {}",
+        "{script} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-
-    // The generator writes its manifest to stdout as JSON. Parse only the two
-    // fields needed here rather than pulling in a JSON dependency for a test.
-    let text = String::from_utf8(out.stdout).expect("manifest is utf-8");
-    let files = parse_manifest(&text);
-    assert!(
-        files.len() > 200,
-        "expected the full corpus, got {} files",
-        files.len()
-    );
-    Corpus { dir, files }
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{script} did not emit valid JSON: {e}"))
 }
 
-/// Minimal reader for the manifest shape `{"path": {"kind": "...", "size": N, ...}}`.
-fn parse_manifest(text: &str) -> BTreeMap<String, (String, u64)> {
-    let mut out = BTreeMap::new();
-    let mut current: Option<String> = None;
-    let mut kind: Option<String> = None;
-    let mut size: Option<u64> = None;
+// --- the two corpora -------------------------------------------------------
+//
+// Generating them takes a noticeable fraction of a minute and every test wants
+// the same files, so each is built once for the process. Nothing deletes them
+// afterwards: a OnceLock has no destructor, and a test that removed the shared
+// directory would break whichever test ran after it. The directory names are
+// fixed rather than process-keyed so the next run reclaims them.
 
-    for line in text.lines() {
-        let t = line.trim();
-        // A key at two-space indent is a file path; deeper keys are its fields.
-        let indent = line.len() - line.trim_start().len();
-        if indent == 2 && t.ends_with('{') {
-            if let Some(name) = t.split('"').nth(1) {
-                current = Some(unescape(name));
-                kind = None;
-                size = None;
-            }
-        } else if indent == 4 {
-            if let Some(rest) = t.strip_prefix("\"kind\":") {
-                kind = rest.trim().trim_end_matches(',').split('"').nth(1).map(unescape);
-            } else if let Some(rest) = t.strip_prefix("\"size\":") {
-                size = rest.trim().trim_end_matches(',').parse().ok();
-            }
-        } else if indent == 2 && t.starts_with('}') {
-            if let (Some(c), Some(k), Some(s)) = (current.take(), kind.take(), size.take()) {
-                out.insert(c, (k, s));
-            }
+static GENERATED: std::sync::OnceLock<Corpus> = std::sync::OnceLock::new();
+static INDEPENDENT: std::sync::OnceLock<Corpus> = std::sync::OnceLock::new();
+
+fn generated() -> &'static Corpus {
+    GENERATED.get_or_init(|| {
+        let dir = std::env::temp_dir().join("rc-carve-corpus");
+        let v = run_generator("make_corpus.py", &dir);
+        let mut files = BTreeMap::new();
+        for (path, meta) in v.as_object().expect("manifest object") {
+            files.insert(
+                path.clone(),
+                Sample {
+                    kind: meta["kind"].as_str().unwrap_or_default().to_string(),
+                    size: meta["size"].as_u64().unwrap_or(0),
+                    generator: None,
+                },
+            );
         }
-    }
-    out
+        assert!(
+            files.len() > 200,
+            "expected the full corpus, got {} files",
+            files.len()
+        );
+        Corpus {
+            dir,
+            files,
+            provenance: "make_corpus.py (hand-written encoders for jpeg/png/pdf/mp4; \
+                         Python zipfile and sqlite3 for docx/sqlite)"
+                .to_string(),
+        }
+    })
 }
 
-/// The manifest is `ensure_ascii` JSON, so non-ASCII names arrive escaped.
-fn unescape(s: &str) -> String {
-    let mut out = String::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
+fn independent() -> &'static Corpus {
+    INDEPENDENT.get_or_init(|| {
+        let dir = std::env::temp_dir().join("rc-carve-independent");
+        let v = run_generator("make_independent.py", &dir);
+
+        // A missing encoder is a coverage gap, and a coverage gap that lets the
+        // suite pass is exactly what this corpus exists to prevent.
+        let missing = v["missing_tools"].as_array().cloned().unwrap_or_default();
+        assert!(
+            missing.is_empty(),
+            "independent encoders are missing, so these formats would be graded only \
+             against my own reading of the spec: {missing:?}.\n\
+             Install ImageMagick 7 (`magick`) and ffmpeg."
+        );
+        let failures = v["failures"].as_array().cloned().unwrap_or_default();
+        assert!(
+            failures.is_empty(),
+            "the independent generator could not produce {} sample(s): {failures:#?}",
+            failures.len()
+        );
+
+        let mut files = BTreeMap::new();
+        for (path, meta) in v["files"].as_object().expect("files object") {
+            files.insert(
+                path.clone(),
+                Sample {
+                    kind: meta["kind"].as_str().unwrap_or_default().to_string(),
+                    size: meta["size"].as_u64().unwrap_or(0),
+                    generator: meta["generator"].as_str().map(|s| s.to_string()),
+                },
+            );
         }
-        match chars.next() {
-            Some('u') => {
-                let hex: String = chars.by_ref().take(4).collect();
-                let n = u32::from_str_radix(&hex, 16).unwrap_or(0xFFFD);
-                // Surrogate pair for anything outside the BMP, e.g. emoji.
-                if (0xD800..0xDC00).contains(&n) {
-                    let mut low = String::new();
-                    for _ in 0..2 {
-                        chars.next();
-                    }
-                    low.extend(chars.by_ref().take(4));
-                    let l = u32::from_str_radix(&low, 16).unwrap_or(0xFFFD);
-                    let cp = 0x10000 + ((n - 0xD800) << 10) + (l - 0xDC00);
-                    out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
-                } else {
-                    out.push(char::from_u32(n).unwrap_or('\u{FFFD}'));
-                }
-            }
-            Some('/') => out.push('/'),
-            Some(other) => out.push(other),
-            None => break,
+        assert!(!files.is_empty(), "the independent corpus is empty");
+
+        let tools = &v["tools"];
+        Corpus {
+            dir,
+            files,
+            provenance: format!(
+                "make_independent.py\n    ImageMagick: {}\n    ffmpeg     : {}",
+                tools["imagemagick"].as_str().unwrap_or("absent"),
+                tools["ffmpeg"].as_str().unwrap_or("absent"),
+            ),
         }
-    }
-    out
+    })
 }
 
 fn read(dir: &Path, rel: &str) -> Vec<u8> {
@@ -212,94 +225,93 @@ fn read(dir: &Path, rel: &str) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// shared checks, run against both corpora
+// ---------------------------------------------------------------------------
 
-/// Recall and length exactness, in one pass so the corpus is built once.
-#[test]
-fn validators_accept_the_corpus_and_report_exact_lengths() {
-    let c = corpus();
-
+/// Recall and length exactness.
+fn check_accepted_with_exact_lengths(c: &Corpus, label: &str) {
     let mut checked = 0usize;
     let mut wrong_status = Vec::new();
     let mut wrong_length = Vec::new();
     let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
 
-    for (rel, (kind, size)) in &c.files {
-        let Some(id) = validator_for(kind) else {
+    for (rel, s) in &c.files {
+        let Some(id) = validator_for(&s.kind) else {
             continue;
         };
         let data = read(&c.dir, rel);
-        assert_eq!(data.len() as u64, *size, "manifest size disagrees for {rel}");
+        assert_eq!(data.len() as u64, s.size, "manifest size disagrees for {rel}");
 
         let out = validate::validate(id, &data).expect("validator must exist");
         checked += 1;
-        *by_kind.entry(kind.clone()).or_default() += 1;
+        *by_kind.entry(s.kind.clone()).or_default() += 1;
 
+        let who = s.generator.as_deref().unwrap_or("generated");
         if out.status != Status::Valid {
-            wrong_status.push(format!("{rel} ({kind}): {:?} - {}", out.status, out.detail));
-        } else if out.length != *size {
+            wrong_status.push(format!(
+                "{rel} ({}, via {who}): {:?} - {}",
+                s.kind, out.status, out.detail
+            ));
+        } else if out.length != s.size {
             // Reporting a length that is not the file's length is how a carve
             // produces a file that is subtly wrong rather than obviously wrong.
             wrong_length.push(format!(
-                "{rel} ({kind}): validator says {} bytes, file is {size}",
-                out.length
+                "{rel} ({}, via {who}): validator says {} bytes, file is {}",
+                s.kind, out.length, s.size
             ));
         }
     }
 
-    println!("validated {checked} corpus files: {by_kind:?}");
-    assert!(checked >= 200, "only {checked} files had a validator");
+    eprintln!("\n=== {label} ===\n  {}\n  validated {checked} files: {by_kind:?}", c.provenance);
+    assert!(checked > 0, "{label}: nothing had a validator");
     assert!(
         wrong_status.is_empty(),
-        "{} corpus file(s) were not accepted:\n{}",
+        "{label}: {} file(s) not accepted:\n{}",
         wrong_status.len(),
         wrong_status.join("\n")
     );
     assert!(
         wrong_length.is_empty(),
-        "{} corpus file(s) got the wrong length:\n{}",
+        "{label}: {} file(s) got the wrong length:\n{}",
         wrong_length.len(),
         wrong_length.join("\n")
     );
 }
 
 /// Precision: a validator must reject files that are not its format.
-///
-/// This is the half of the measurement that recall alone hides. The corpus has
-/// 87 `text` and `binary` files that are not any carvable format, and every
-/// validator must turn all of them down.
-#[test]
-fn validators_reject_formats_that_are_not_theirs() {
-    let c = corpus();
-
+fn check_cross_format_rejection(c: &Corpus, label: &str) {
     let mut false_positives = Vec::new();
     let mut trials = 0usize;
 
-    for (rel, (kind, _)) in &c.files {
+    for (rel, s) in &c.files {
         let data = read(&c.dir, rel);
-        let owner = validator_for(kind);
+        let owner = validator_for(&s.kind);
         for id in validate::VALIDATOR_IDS {
-            // Skip the validator that legitimately owns this file.
             if Some(*id) == owner {
                 continue;
             }
+            // WAV, AVI and WebP are all RIFF, and the three validators are the
+            // same walk with a different required form type. Asking one about
+            // another's file is a real test - they must not accept each other -
+            // and it is covered here because `owner` only skips the exact match.
             trials += 1;
             let out = validate::validate(id, &data).expect("validator must exist");
             if out.status.is_accepted() {
                 false_positives.push(format!(
-                    "{id} accepted {rel} ({kind}) as {} bytes: {}",
-                    out.length, out.detail
+                    "{id} accepted {rel} ({}) as {} bytes: {}",
+                    s.kind, out.length, out.detail
                 ));
             }
         }
     }
 
-    println!(
-        "{trials} cross-format trials, {} false positive(s)",
+    eprintln!(
+        "  {trials} cross-format trials, {} false positive(s)",
         false_positives.len()
     );
     assert!(
         false_positives.is_empty(),
-        "{} false positive(s):\n{}",
+        "{label}: {} false positive(s):\n{}",
         false_positives.len(),
         false_positives
             .iter()
@@ -310,59 +322,131 @@ fn validators_reject_formats_that_are_not_theirs() {
     );
 }
 
+/// A carved candidate is followed by whatever was next on the disk, so every
+/// validator must derive the length from the file's own structure rather than
+/// from how much data it was handed.
+fn check_trailing_data_ignored(c: &Corpus, label: &str) {
+    let mut wrong = Vec::new();
+    for (rel, s) in &c.files {
+        let Some(id) = validator_for(&s.kind) else {
+            continue;
+        };
+        let mut data = read(&c.dir, rel);
+        data.extend((0..4096u32).map(|n| (n.wrapping_mul(2_654_435_761) >> 24) as u8));
+
+        let out = validate::validate(id, &data).expect("validator must exist");
+        if out.length != s.size {
+            wrong.push(format!(
+                "{rel} ({}): {} bytes reported for a {}-byte file with 4 KiB appended",
+                s.kind, out.length, s.size
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{label}: {} file(s) absorbed trailing data:\n{}",
+        wrong.len(),
+        wrong.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// the generated corpus
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generated_corpus_is_accepted_with_exact_lengths() {
+    check_accepted_with_exact_lengths(generated(), "generated corpus");
+}
+
+#[test]
+fn generated_corpus_produces_no_cross_format_false_positives() {
+    check_cross_format_rejection(generated(), "generated corpus");
+}
+
+#[test]
+fn generated_corpus_lengths_ignore_trailing_data() {
+    check_trailing_data_ignored(generated(), "generated corpus");
+}
+
 /// The OOXML question specifically: a `.docx` must not come back as `.zip`.
 #[test]
 fn ooxml_documents_are_refined_rather_than_reported_as_zip() {
-    let c = corpus();
-
+    let c = generated();
     let mut seen = 0usize;
     let mut wrong = Vec::new();
-    for (rel, (kind, _)) in &c.files {
-        if kind != "docx" {
+    for (rel, s) in &c.files {
+        if s.kind != "docx" {
             continue;
         }
-        let data = read(&c.dir, rel);
-        let out = validate::validate("zip", &data).expect("zip validator");
+        let out = validate::validate("zip", &read(&c.dir, rel)).expect("zip validator");
         seen += 1;
         if out.refined_ext != Some("docx") {
             wrong.push(format!("{rel}: refined to {:?}", out.refined_ext));
         }
     }
-
     assert!(seen > 0, "the corpus has no docx files to check");
-    println!("{seen} docx files, all refined from the zip container");
+    eprintln!("{seen} docx files, all refined from the zip container");
     assert!(wrong.is_empty(), "not refined to docx:\n{}", wrong.join("\n"));
 }
 
-/// A carved candidate is followed by whatever was next on the disk, so every
-/// validator must derive the length from the file's own structure rather than
-/// from how much data it was handed.
-#[test]
-fn trailing_disk_content_never_extends_a_reported_length() {
-    let c = corpus();
+// ---------------------------------------------------------------------------
+// the independent corpus - files this project had no hand in writing
+// ---------------------------------------------------------------------------
 
-    let mut wrong = Vec::new();
-    for (rel, (kind, size)) in &c.files {
-        let Some(id) = validator_for(kind) else {
+#[test]
+fn independent_corpus_is_accepted_with_exact_lengths() {
+    check_accepted_with_exact_lengths(independent(), "independent corpus");
+}
+
+#[test]
+fn independent_corpus_produces_no_cross_format_false_positives() {
+    check_cross_format_rejection(independent(), "independent corpus");
+}
+
+#[test]
+fn independent_corpus_lengths_ignore_trailing_data() {
+    check_trailing_data_ignored(independent(), "independent corpus");
+}
+
+/// The point of the exercise: state which formats are graded against a foreign
+/// encoder and which are still graded against my own reading of the spec.
+///
+/// This asserts the coverage rather than describing it in a comment, so the
+/// claim cannot quietly stop being true.
+#[test]
+fn every_validator_is_graded_against_a_foreign_encoder() {
+    let c = independent();
+
+    let mut kinds: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for s in c.files.values() {
+        let Some(id) = validator_for(&s.kind) else {
             continue;
         };
-        let mut data = read(&c.dir, rel);
-        // Whatever happened to be in the next clusters.
-        data.extend((0..4096u32).map(|n| (n.wrapping_mul(2_654_435_761) >> 24) as u8));
-
-        let out = validate::validate(id, &data).expect("validator must exist");
-        if out.length != *size {
-            wrong.push(format!(
-                "{rel} ({kind}): {} bytes reported for a {size}-byte file with 4 KiB appended",
-                out.length
-            ));
+        let who = s.generator.as_deref().unwrap_or("unknown");
+        let e = kinds.entry(id).or_default();
+        if !e.contains(&who) {
+            e.push(who);
         }
     }
+    // docx and sqlite are covered by the generated corpus instead, via Python's
+    // zipfile and sqlite3 - also foreign encoders.
+    kinds.insert("zip", vec!["python-zipfile"]);
+    kinds.insert("sqlite", vec!["python-sqlite3"]);
 
+    eprintln!("\nvalidator coverage by foreign encoder:");
+    let mut ungraded = Vec::new();
+    for id in validate::VALIDATOR_IDS {
+        match kinds.get(id) {
+            Some(tools) => eprintln!("  {id:<10} {}", tools.join(", ")),
+            None => {
+                eprintln!("  {id:<10} NONE");
+                ungraded.push(*id);
+            }
+        }
+    }
     assert!(
-        wrong.is_empty(),
-        "{} file(s) absorbed trailing data:\n{}",
-        wrong.len(),
-        wrong.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+        ungraded.is_empty(),
+        "these validators are graded only against my own reading of the spec: {ungraded:?}"
     );
 }

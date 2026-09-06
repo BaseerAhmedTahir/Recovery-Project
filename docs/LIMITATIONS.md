@@ -194,6 +194,19 @@ Consequences, in order of how easy each is to get wrong:
    the machine that built them.** Regenerating a manifest to repair a lost one
    works only if the same Python, zlib and SQLite versions are still installed.
 
+**This is now recorded rather than remembered.** `make_corpus.py --provenance`
+emits the toolchain - Python, SQLite library, zlib, platform, the generator's
+own SHA-256, and the git commit - and every `expected.json` writer embeds it
+under `generator.provenance`. The ground-truth writers refuse to re-describe an
+*unchanged* image with a manifest built by a different toolchain, which is the
+one operation that produces a correct `image_sha256` alongside 58 silently
+wrong per-file hashes. A genuine rebuild, which produces a new image and a new
+image hash, passes through untouched.
+
+The seven fixtures built under WSL predate the field and report `NONE
+RECORDED`; rebuilding through `build_fixtures.sh` adds it. `ntfs-windows` has
+it.
+
 This is not a defect to fix. Format diversity is the point of having an
 independent sample: the Windows fixture genuinely contains SQLite databases
 written by a different library version and ZIP members deflated by a different
@@ -321,10 +334,13 @@ Byte-level recovery is what Milestones 3 and 4 grade.
   meaningless for a signature carver; see `docs/PROGRESS.md`.
 - **The candidate index has never been under memory pressure.** The 2 GB RSS
   ceiling from Milestone 3 cannot be tested against 512 MiB fixtures.
-- **No RIFF fixture.** The corpus has no WAV or AVI file, so the `riff_wav`,
-  `riff_avi` and `riff_webp` validators can only be unit-tested against
-  hand-built byte vectors, never against a file some other encoder produced.
-  The same applies to BMP, GIF and TIFF.
+- **The independent corpus is not in the disk images.** ImageMagick and ffmpeg
+  now supply real files for all eight formats the generated corpus could not
+  vouch for, but those samples are validated as bytes rather than written into
+  the fixtures. Validator grading does not need a filesystem; the Milestone 3
+  *carving* acceptance test does, and folding them in is a prerequisite for it.
+- **GIF and TIFF have signatures but no validator**, so they are header-match
+  only. ImageMagick can produce both when that changes.
 
 ---
 

@@ -2,7 +2,12 @@
 /target/
 **/*.rs.bk
 
-# Generated fixtures: large, reproducible from testdata/build_fixtures.sh
+# Generated fixtures: large. Rebuildable from testdata/build_fixtures.sh, but
+# only byte-identical on the same toolchain - SQLite stamps its library version
+# into every database header and DEFLATE output varies between zlib versions,
+# which makes 58 of the 315 corpus files differ across machines at identical
+# size. Each expected.json records the toolchain that built it. See
+# docs/LIMITATIONS.md section 2.7.
 /testdata/fixtures/*
 !/testdata/fixtures/.gitkeep
 

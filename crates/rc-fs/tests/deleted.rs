@@ -303,6 +303,63 @@ fn report(name: &str, s: &Score) {
 
 const BAR: f64 = 0.95;
 
+/// Report the toolchain each fixture was built with.
+///
+/// The corpus generator is byte-for-byte deterministic on one toolchain and
+/// not across toolchains - SQLite stamps its library version into every
+/// database header, and DEFLATE output varies between zlib versions, which
+/// between them makes 58 of the 315 files differ in content at identical size.
+/// So the toolchain is part of the ground truth, and a fixture that does not
+/// record it cannot have its per-file hashes re-derived later.
+///
+/// This reports rather than fails: a fixture built on another toolchain is
+/// perfectly valid for itself, and the cross-toolchain diversity is the point
+/// of having a Windows-built NTFS image at all. The loud failure lives where
+/// it is actionable - the ground-truth writers refuse to re-describe an
+/// unchanged image with a manifest from a different toolchain.
+#[test]
+fn fixtures_record_the_toolchain_that_built_them() {
+    let names = [
+        "ntfs-basic", "ntfs-windows", "fat32-basic", "exfat-basic",
+        "ext4-basic", "quickformat", "overwritten", "nopart", "fragmented-jpeg",
+    ];
+    let mut without = Vec::new();
+    let mut found = 0usize;
+
+    eprintln!("\nfixture provenance:");
+    for name in names {
+        let json = fixture_dir().join(format!("{name}.expected.json"));
+        if !json.exists() {
+            continue;
+        }
+        found += 1;
+        let text = std::fs::read_to_string(&json).expect("read expected.json");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("parse expected.json");
+        let prov = &v["generator"]["provenance"];
+        if prov.is_object() {
+            eprintln!(
+                "  {name:<17} {} / sqlite {} / zlib {}",
+                prov["system"].as_str().unwrap_or("?"),
+                prov["sqlite_library"].as_str().unwrap_or("?"),
+                prov["zlib"].as_str().unwrap_or("?"),
+            );
+        } else {
+            eprintln!("  {name:<17} NONE RECORDED");
+            without.push(name);
+        }
+    }
+
+    assert!(found > 0, "no fixtures are built");
+    if !without.is_empty() {
+        eprintln!(
+            "\n  note: {} fixture(s) predate the provenance field and cannot have their \n\
+               per-file hashes re-derived: {without:?}\n  \
+             Rebuilding them through testdata/build_fixtures.sh records it.",
+            without.len()
+        );
+    }
+}
+
 #[test]
 fn ntfs_recovers_deleted_entries() {
     let Some(s) = grade("ntfs-basic") else {

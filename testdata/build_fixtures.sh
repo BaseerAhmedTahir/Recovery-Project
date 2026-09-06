@@ -27,6 +27,16 @@ source "$HERE/lib/common.sh"
 
 OUT_DIR="${RC_FIXTURE_DIR:-$HERE/fixtures}"
 CORPUS_PY="$HERE/corpus/make_corpus.py"
+
+# The toolchain that builds the corpus is part of the ground truth. The
+# generator is byte-for-byte deterministic on one toolchain and not across
+# toolchains: SQLite stamps its library version into every database header and
+# DEFLATE output varies between zlib versions, which between them makes 58 of
+# the 315 files differ in content at identical size. Recording this means a
+# manifest paired with an image built elsewhere is a visible mismatch rather
+# than 58 silently wrong hashes. See docs/LIMITATIONS.md section 2.7.
+RC_PROVENANCE="$(python3 "$CORPUS_PY" --provenance)"
+export RC_PROVENANCE
 GENERATOR_VERSION=1
 
 # Files deleted from every basic filesystem fixture, and therefore the set the
@@ -349,6 +359,7 @@ doc = {
         "version": int(os.environ["RC_GENVER"]),
         "built_utc": datetime.datetime.now(datetime.timezone.utc)
                      .replace(microsecond=0).isoformat(),
+        "provenance": json.loads(os.environ["RC_PROVENANCE"]),
     },
     "notes": os.environ["RC_NOTES"],
     "files": files,
@@ -522,7 +533,8 @@ doc = {
     "generator": {"script": "build_fixtures.sh",
                   "version": int(os.environ["RC_GENVER"]),
                   "built_utc": datetime.datetime.now(datetime.timezone.utc)
-                               .replace(microsecond=0).isoformat()},
+                               .replace(microsecond=0).isoformat(),
+                  "provenance": json.loads(os.environ["RC_PROVENANCE"])},
     "notes": ("Volume filled with %s KiB filler files, every other one deleted "
               "to punch holes, then large media written into the fragmented "
               "free space and deleted. Every listed file is expected to be "
@@ -701,7 +713,8 @@ doc = {
     "generator": {"script": "build_fixtures.sh",
                   "version": int(os.environ["RC_GENVER"]),
                   "built_utc": datetime.datetime.now(datetime.timezone.utc)
-                               .replace(microsecond=0).isoformat()},
+                               .replace(microsecond=0).isoformat(),
+                  "provenance": json.loads(os.environ["RC_PROVENANCE"])},
     "notes": os.environ["RC_NOTES"],
     "files": files,
     "expect": {"deleted_count": len(files), "present_count": 0},

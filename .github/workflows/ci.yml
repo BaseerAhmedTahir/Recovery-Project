@@ -57,6 +57,24 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ntfs-3g dosfstools exfatprogs exfat-fuse e2fsprogs util-linux
 
+      # Eight of the ten validators would otherwise be graded only against
+      # encoders written in this repository, which cannot catch a misreading of
+      # a spec shared between an encoder and its validator. ImageMagick and
+      # ffmpeg supply files neither this project nor its author had a hand in.
+      #
+      # The corpus test FAILS rather than skips when these are absent - a
+      # coverage gap that lets the suite pass is exactly what it exists to
+      # prevent - so these steps are required, not optional.
+      - name: Install independent encoders (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq imagemagick ffmpeg
+
+      - name: Install independent encoders (Windows)
+        if: runner.os == 'Windows'
+        run: choco install -y --no-progress imagemagick.tool ffmpeg
+
       - name: Allow fixture generation to use sudo
         if: runner.os == 'Linux'
         run: sudo bash testdata/lib/install_sudoers.sh "$USER"

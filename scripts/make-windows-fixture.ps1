@@ -287,14 +287,19 @@ Step "Writing expected.json"
 $env:RC_MANIFEST = $manifest
 $env:RC_IMG      = $img
 $env:RC_DELETED  = ($deleted -join "`n")
+# The toolchain is part of the ground truth; see the note in build_fixtures.sh
+# and docs/LIMITATIONS.md section 2.7.
+$env:RC_PROVENANCE = ((& $py $corpusPy --provenance) -join "`n")
+if ($LASTEXITCODE -ne 0) { Fail "reading corpus provenance failed" }
 $gt = Join-Path $env:TEMP 'rc-groundtruth.py'
 @'
-import hashlib, json, os, datetime
+import hashlib, json, os, sys, datetime
 # PowerShell's > redirection writes UTF-8 *with* a BOM, which json.load
 # rejects as a stray character before the opening brace. utf-8-sig strips
 # it when present and is a no-op when it is not.
 manifest = json.load(open(os.environ["RC_MANIFEST"], encoding="utf-8-sig"))
 deleted = set(x for x in os.environ["RC_DELETED"].split("\n") if x)
+prov = json.loads(os.environ["RC_PROVENANCE"])
 img = os.environ["RC_IMG"]
 h = hashlib.sha256()
 with open(img, "rb") as fh:
@@ -317,10 +322,11 @@ doc = {
     "partitioned": True,
     "generator": {
         "script": "make-windows-fixture.ps1",
-        "version": 1,
+        "version": 2,
         "built_utc": datetime.datetime.now(datetime.timezone.utc)
                      .replace(microsecond=0).isoformat(),
         "driver": "Microsoft NTFS (independent of mkfs.ntfs/ntfs-3g)",
+        "provenance": prov,
     },
     "notes": ("Formatted and populated by the Windows NTFS driver rather than "
               "mkfs.ntfs/ntfs-3g, as a sample independent of the other "
@@ -336,6 +342,50 @@ doc = {
     },
 }
 out = img[:-4] + ".expected.json"
+
+# Refuse to re-describe an image with a manifest built by a different
+# toolchain.
+#
+# The dangerous operation is repairing a lost expected.json against an image
+# that still exists. The image hash would come out correct - it is computed
+# from the image - while 58 of the 315 per-file hashes would be quietly wrong,
+# because SQLite stamps its library version into every database header and
+# DEFLATE output varies between zlib versions. That is precisely the failure
+# mode that is invisible without this check: same image, same image hash,
+# wrong contents. Same image plus different toolchain is the signature, so
+# refuse exactly that combination and let a genuine rebuild (new image, new
+# hash) through untouched.
+if os.path.exists(out):
+    try:
+        prev = json.load(open(out, encoding="utf-8"))
+    except Exception:
+        prev = None
+    if prev:
+        prev_prov = prev.get("generator", {}).get("provenance")
+        same_image = prev.get("image_sha256") == doc["image_sha256"]
+        if prev_prov and same_image and prev_prov != prov:
+            differing = sorted(
+                k for k in set(prev_prov) | set(prov)
+                if prev_prov.get(k) != prov.get(k)
+            )
+            sys.stderr.write(
+                "REFUSING to overwrite %s.\n\n"
+                "The image is unchanged but the toolchain is not, so the per-file "
+                "hashes this would write are not the hashes of the bytes in that "
+                "image. Differing: %s\n"
+                "  recorded: %s\n"
+                "  current : %s\n\n"
+                "Rebuild the image with this toolchain, or restore the original "
+                "expected.json. See docs/LIMITATIONS.md section 2.7.\n"
+                % (
+                    os.path.basename(out),
+                    ", ".join(differing),
+                    {k: prev_prov.get(k) for k in differing},
+                    {k: prov.get(k) for k in differing},
+                )
+            )
+            raise SystemExit(3)
+
 with open(out, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, indent=2, sort_keys=True)
 print("    deleted=%d present=%d" % (doc["expect"]["deleted_count"],
@@ -346,7 +396,7 @@ print("    deleted=%d present=%d" % (doc["expect"]["deleted_count"],
 # code, so without this the script printed "Done:" after the ground truth had
 # failed to write - a fixture with no expected.json, reported as a success.
 if ($LASTEXITCODE -ne 0) { Fail "writing ground truth failed; $img has no expected.json and must not be used" }
-Remove-Item Env:\RC_MANIFEST, Env:\RC_IMG, Env:\RC_DELETED -ErrorAction SilentlyContinue
+Remove-Item Env:\RC_MANIFEST, Env:\RC_IMG, Env:\RC_DELETED, Env:\RC_PROVENANCE -ErrorAction SilentlyContinue
 if (-not (Test-Path $expected)) { Fail "ground truth reported success but $expected does not exist" }
 
 if (Test-Path (Ext $work)) { [System.IO.Directory]::Delete((Ext $work), $true) }
