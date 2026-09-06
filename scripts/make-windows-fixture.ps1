@@ -51,6 +51,32 @@ function Ext([string]$p) {
     return '\\?\' + $full
 }
 
+# Every NTFS volume Windows formats gets a System Volume Information directory
+# whose ACL denies even Administrator, and .NET's AllDirectories enumeration
+# aborts the entire walk on the first directory it cannot open rather than
+# skipping it. So walk the tree explicitly. Denials are collected rather than
+# swallowed: a denial we did not expect is a finding, not noise.
+function WalkFiles([string]$root, [ref]$denied) {
+    $out   = [System.Collections.Generic.List[string]]::new()
+    $queue = [System.Collections.Generic.Queue[string]]::new()
+    $queue.Enqueue($root)
+    while ($queue.Count -gt 0) {
+        $dir = $queue.Dequeue()
+        try {
+            foreach ($f in [System.IO.Directory]::EnumerateFiles($dir))       { $out.Add($f) }
+            foreach ($d in [System.IO.Directory]::EnumerateDirectories($dir)) { $queue.Enqueue($d) }
+        } catch [System.UnauthorizedAccessException] {
+            $denied.Value.Add($dir) | Out-Null
+        }
+    }
+    return $out.ToArray()
+}
+
+# Metadata Windows creates on its own. Not part of the corpus, and not counted
+# as recovered files - but they are part of what makes this fixture
+# independent, because ntfs-3g never produces them.
+$WindowsArtifacts = @('System Volume Information', '$RECYCLE.BIN', '$Extend')
+
 $admin = ([Security.Principal.WindowsPrincipal] `
           [Security.Principal.WindowsIdentity]::GetCurrent()
          ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -71,13 +97,37 @@ if (-not $py) { Fail "python not found on PATH" }
 New-Item -ItemType Directory -Force -Path $fixtures | Out-Null
 
 # --- 1. corpus -------------------------------------------------------------
+# The corpus contains CJK, Cyrillic, Arabic and emoji filenames, and
+# make_corpus.py writes --deleted-set as raw UTF-8 bytes for that reason. But
+# PowerShell decodes a native process's stdout using [Console]::OutputEncoding,
+# so a console that is not UTF-8 mangles those names silently: File.Exists()
+# then returns false, the file is never deleted, and expected.json claims a
+# deletion that never happened. Pin the encoding on both sides, and verify the
+# round trip below rather than trusting it.
+$env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONUTF8 = '1'
+$prevOutEnc = [Console]::OutputEncoding
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}
+
 Step "Generating corpus with $py"
 if (Test-Path (Ext $work)) { [System.IO.Directory]::Delete((Ext $work), $true) }
 $manifest = Join-Path $env:TEMP 'rc-wincorpus.json'
 & $py $corpusPy $work > $manifest
 if ($LASTEXITCODE -ne 0) { Fail "corpus generation failed" }
 $deleted = @(& $py $corpusPy --deleted-set)
-Write-Host "    corpus written, $($deleted.Count) files marked for deletion"
+try { [Console]::OutputEncoding = $prevOutEnc } catch {}
+
+# Every name we intend to delete must appear verbatim among the names the
+# generator says it wrote. If the two disagree, an encoding boundary corrupted
+# something and the ground truth would be a lie - fail here, not silently.
+$manifestDoc = [System.IO.File]::ReadAllText($manifest) | ConvertFrom-Json
+$known = @{}
+foreach ($n in $manifestDoc.PSObject.Properties.Name) { $known[$n] = $true }
+$unknown = @($deleted | Where-Object { -not $known.ContainsKey($_) })
+if ($unknown) {
+    Fail "these names are in the deleted set but not in the corpus manifest, which means a text-encoding boundary corrupted them:`n$($unknown -join "`n")"
+}
+Write-Host "    corpus written: $($known.Count) files, $($deleted.Count) marked for deletion (names round-trip cleanly)"
 
 # --- 2. create and attach a fixed VHD -------------------------------------
 Step "Creating a ${SizeMB}MB fixed VHD"
@@ -102,7 +152,9 @@ try {
     # --- 3. populate ------------------------------------------------------
     Step "Copying the corpus onto the volume"
     $workExt   = Ext $work
-    $srcFiles  = @([System.IO.Directory]::EnumerateFiles($workExt, '*', 'AllDirectories'))
+    $srcDenied = [System.Collections.Generic.List[string]]::new()
+    $srcFiles  = @(WalkFiles $workExt ([ref]$srcDenied))
+    if ($srcDenied.Count) { Fail "could not read these corpus directories:`n$($srcDenied -join "`n")" }
     $prefixLen = $workExt.Length + 1
     foreach ($src in $srcFiles) {
         $rel = $src.Substring($prefixLen)
@@ -113,15 +165,40 @@ try {
     Write-Host "    copied $($srcFiles.Count) files"
 
     # Confirm the names survived before recording ground truth about them.
-    $volRoot = Ext "${Letter}:\"
-    $onDisk = @([System.IO.Directory]::EnumerateFiles($volRoot, '*', 'AllDirectories') |
+    $volRoot   = Ext "${Letter}:\"
+    $volDenied = [System.Collections.Generic.List[string]]::new()
+    $onDisk    = @(WalkFiles $volRoot ([ref]$volDenied) |
         ForEach-Object { $_.Substring($volRoot.Length).TrimStart('\').Replace('\', '/') })
-    $wanted = @($srcFiles | ForEach-Object { $_.Substring($prefixLen).Replace('\', '/') })
-    $missing = Compare-Object $wanted $onDisk | Where-Object SideIndicator -eq '<='
+
+    # Only Windows own metadata directories may be unreadable. Anything else
+    # denied means the corpus did not land the way we think it did.
+    $unexpected = @($volDenied | Where-Object {
+        $top = $_.Substring($volRoot.Length).TrimStart('\').Split('\')[0]
+        $WindowsArtifacts -notcontains $top
+    })
+    if ($unexpected) {
+        Fail "unexpected access denial under ${Letter}: `n$($unexpected -join "`n")"
+    }
+    if ($volDenied.Count) {
+        $names = ($volDenied | ForEach-Object { $_.Substring($volRoot.Length) }) -join ', '
+        Write-Host "    skipped $($volDenied.Count) Windows metadata dir(s): $names"
+    }
+
+    $wanted  = @($srcFiles | ForEach-Object { $_.Substring($prefixLen).Replace('\', '/') })
+    $missing = @(Compare-Object $wanted $onDisk | Where-Object SideIndicator -eq '<=')
     if ($missing) {
         Fail "these corpus files are not on the volume under their exact names:`n$($missing.InputObject -join "`n")"
     }
     Write-Host "    verified $($wanted.Count) files present under their exact names"
+
+    # Report what Windows added that ntfs-3g would not have. The parser will
+    # see these MFT records; they should surface as allocated files and must
+    # not be mistaken for corpus entries.
+    $extra = @(Compare-Object $wanted $onDisk | Where-Object SideIndicator -eq '=>')
+    if ($extra) {
+        Write-Host "    plus $($extra.Count) file(s) created by Windows itself:"
+        foreach ($e in $extra) { Write-Host "      $($e.InputObject)" }
+    }
 
     # --- 4. delete the same subset ----------------------------------------
     Step "Deleting $($deleted.Count) files"
@@ -159,7 +236,10 @@ $env:RC_DELETED  = ($deleted -join "`n")
 $gt = Join-Path $env:TEMP 'rc-groundtruth.py'
 @'
 import hashlib, json, os, datetime
-manifest = json.load(open(os.environ["RC_MANIFEST"], encoding="utf-8"))
+# PowerShell's > redirection writes UTF-8 *with* a BOM, which json.load
+# rejects as a stray character before the opening brace. utf-8-sig strips
+# it when present and is a no-op when it is not.
+manifest = json.load(open(os.environ["RC_MANIFEST"], encoding="utf-8-sig"))
 deleted = set(x for x in os.environ["RC_DELETED"].split("\n") if x)
 img = os.environ["RC_IMG"]
 h = hashlib.sha256()
@@ -192,7 +272,9 @@ doc = {
               "mkfs.ntfs/ntfs-3g, as a sample independent of the other "
               "fixtures. Disagreement with ntfs-basic.img indicates a parser "
               "problem rather than a fixture one. This image is PARTITIONED: "
-              "the volume starts at the partition offset, not at LBA 0."),
+              "the volume starts at the partition offset, not at LBA 0. "
+              "There is no 'fragmented_file' key: this generator does not "
+              "force fragmentation, so use ntfs-basic.img for that case."),
     "files": files,
     "expect": {
         "deleted_count": sum(1 for f in files.values() if f["state"] == "deleted"),
