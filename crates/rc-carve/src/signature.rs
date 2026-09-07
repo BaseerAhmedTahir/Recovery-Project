@@ -371,6 +371,48 @@ mod tests {
         assert!(SignatureDb::from_json(json).is_err());
     }
 
+    /// The SQLite WAL magic is 0x377f0682 or 0x377f0683 - the low bit selects
+    /// the checksum endianness - so the entry carries a mask that clears it.
+    /// Without the mask half of all real WAL files would be invisible, and a
+    /// mask that was too wide would match neighbouring magics as well.
+    #[test]
+    fn the_wal_signature_matches_both_endian_magics_and_nothing_else() {
+        let db = SignatureDb::builtin().expect("builtin db");
+        let wal = db.get("sqlite_wal").expect("sqlite_wal entry");
+        assert!(wal.header_mask.is_some(), "the entry lost its mask");
+
+        let mut body = vec![0u8; 32];
+        for (magic, want) in [
+            (0x377f_0682u32, true),  // big-endian checksums; seen on this machine
+            (0x377f_0683, true),     // little-endian checksums; from the spec
+            (0x377f_0680, false),
+            (0x377f_0684, false),
+            (0x367f_0682, false),
+        ] {
+            body[..4].copy_from_slice(&magic.to_be_bytes());
+            assert_eq!(
+                wal.matches(&body),
+                want,
+                "magic {magic:#010x} should {} match",
+                if want { "" } else { "not" }
+            );
+        }
+    }
+
+    /// A header that is mostly ASCII is a string someone typed, and a typo in
+    /// one is invisible: the signature simply never fires. `vhd` read
+    /// "connecti" for a cookie that is actually "conectix" - one 'n', a quirk
+    /// of the VHD spec - and could never have matched anything.
+    #[test]
+    fn the_vhd_cookie_is_the_one_real_files_carry() {
+        let db = SignatureDb::builtin().expect("builtin db");
+        let vhd = db.get("vhd").expect("vhd entry");
+        assert_eq!(
+            vhd.header, b"conectix",
+            "the VHD cookie has one 'n'; confirmed against real VHDs on disk"
+        );
+    }
+
     #[test]
     fn prefilter_byte_reflects_the_header_offset() {
         let db = SignatureDb::builtin().unwrap();

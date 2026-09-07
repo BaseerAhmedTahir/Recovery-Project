@@ -373,8 +373,10 @@
       "category": "database",
       "ext": "wal",
       "header": "377F0682",
+      "header_mask": "FFFFFFFE",
       "id": "sqlite_wal",
       "max_size": 4294967296,
+      "note": "The WAL magic is 0x377f0682 or 0x377f0683 - the low bit selects big- or little-endian checksums - so the mask clears it and both match. 0682 was confirmed against a WAL this machine wrote; 0683 comes from the file-format spec. Without the mask, half of all real WAL files would be invisible.",
       "validator": "none"
     },
     {
@@ -396,9 +398,10 @@
     {
       "category": "other",
       "ext": "vhd",
-      "header": "636F6E6E65637469",
+      "header": "636F6E6563746978",
       "id": "vhd",
       "max_size": 137438953472,
+      "note": "The cookie is 'conectix' - one 'n', a long-standing quirk of the VHD spec. This entry read 'connecti' and could never have matched; confirmed against two real VHDs on disk. Note also that only dynamic and differencing VHDs carry a copy of the footer at offset 0. A fixed VHD has the cookie in its last 512 bytes only, so it is not findable by a header-anchored signature at all.",
       "validator": "none"
     }
   ]
