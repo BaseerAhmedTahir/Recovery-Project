@@ -289,6 +289,7 @@ Prerequisites (all of which gate the carving grade being meaningful):
 | Precision measured alongside recall | done for both: validators on two corpora, scanner on the quickformat fixture |
 | Multi-threaded scanner with a SIMD prefilter | done; prefilter threshold set by measurement |
 | Byte-exact recovery of contiguous files | done: 228 of 228 on the quick-formatted fixture |
+| Carve 20+ formats | done against a synthetic image: 38 of 38; not yet from a real quick-formatted volume |
 | Disk-backed candidate index (`rc-index`) | done: 10x the rows costs 1.28x the peak, against a 2.0x bar |
 | Peak RSS under 2 GB | done: 25 MiB at 500,000 candidates |
 | Throughput measurable | see below |
@@ -527,6 +528,39 @@ Two validators were written *because* of this measurement rather than from the
 format list: `ico` (3782 of 4060 candidates before it existed) and `pe` (50, in
 a fixture containing no executables).
 
+### Format coverage: 38 of 38
+
+Milestone 3 asks for 20+ formats. `testdata/corpus/formats.py` builds one
+ordinary file of every format the signature database claims to know - 38
+distinct formats - and `tests/formats.rs` lays them at cluster-aligned offsets
+and carves them back.
+
+| Measure | Value |
+|---|---|
+| Formats found by their own signature | **38 of 38** |
+| Recovered byte-exactly | 10 (every format whose validator establishes a length) |
+| Header matches | 100 for 38 files |
+
+Where the bytes come from is split deliberately. gzip, bzip2 and xz come from
+zlib, libbzip2 and liblzma; WAV from Python's `wave`; ZIP from `zipfile`; the
+SQLite WAL from SQLite. Those are foreign implementations and their output is
+evidence. The rest are hand-written from the specs, which proves the signature
+matches something shaped like the format and nothing more - validator
+correctness is established separately by the ImageMagick and ffmpeg corpus.
+
+Every sample is at least 8 KiB, because NTFS stores a smaller file's data
+*inside* its MFT record rather than in a cluster. A quick format discards the
+MFT, so a resident file is unrecoverable by carving however good the carver is,
+and a corpus of 200-byte samples would have measured nothing. The generator's
+self-check enforces that floor and caught three samples that were under it.
+
+Two bugs came out of building this. The `vhd` signature read "connecti" for a
+cookie that is "conectix" and could never have fired. And every `.m4a` carved
+as `.mp4`: both signatures match the same bytes - `ftyp` at offset 4, and
+`ftypM4A ` at offset 4 - so one suppressed the other as contained, by database
+order. The longer header is the more specific claim and now wins, which is the
+same rule that keeps a `.docx` from coming back as a `.zip`.
+
 ### rc-index: the memory criterion, measured
 
 SPEC.md section 5.8 requires peak RSS under ~2 GB regardless of drive size.
@@ -583,13 +617,11 @@ test therefore reports:
 
 **Still open for Milestone 3:**
 
-* **Carve 20+ formats from a quick-formatted fixture.** The acceptance
-  criterion names a number the current fixture cannot reach: it holds six
-  formats (docx, jpg, mp4, pdf, png, sqlite) and all six are recovered. Getting
-  to 20 means folding the independent corpus - ImageMagick and ffmpeg already
-  produce ico, bmp, webp, wav, avi, gif and tiff - into the images themselves,
-  which is a fixture rebuild.
 * **A throughput number that describes something.** See below.
+* **Folding the format corpus into a real quick-formatted volume.** The
+  coverage below is measured against a synthetic image; carving them out of a
+  volume the NTFS driver actually formatted is a fixture rebuild and is the
+  remaining half of the criterion.
 * **`rc-cli carve`**, wiring the scanner to the index. SPEC.md is explicit
   that the CLI is the source of truth and everything must be reachable there.
 

@@ -119,6 +119,15 @@ pub struct Candidate {
     /// Whether `length` is the file's real size or a floor. Only an
     /// established length is allowed to suppress overlapping candidates.
     pub length_established: bool,
+    /// How many bytes of header this signature had to match, counting the
+    /// offset it sits at.
+    ///
+    /// Used to pick a winner when two signatures describe the same bytes. An
+    /// M4A file matches both `ftyp` at offset 4 (four bytes) and `ftypM4A ` at
+    /// offset 4 (eight bytes); the longer match is the more specific claim and
+    /// is the one worth reporting, for the same reason a .docx should not come
+    /// back as a .zip.
+    pub header_span: usize,
 }
 
 impl Candidate {
@@ -439,6 +448,7 @@ pub fn scan(
                 detail: "not validated".into(),
                 evidence: Vec::new(),
                 length_established: false,
+                header_span: sig.header_offset + sig.header.len(),
             });
             continue;
         }
@@ -456,6 +466,7 @@ pub fn scan(
                 detail: "header match only; this format has no validator".into(),
                 evidence: Vec::new(),
                 length_established: false,
+                header_span: sig.header_offset + sig.header.len(),
             });
             continue;
         };
@@ -509,6 +520,7 @@ pub fn scan(
             detail: out.detail,
             evidence: out.evidence,
             length_established: out.length_established,
+            header_span: sig.header_offset + sig.header.len(),
         });
     }
 
@@ -538,8 +550,20 @@ pub fn scan(
 /// has an extent worth trusting against other people's data.
 fn suppress_contained(candidates: &mut Vec<Candidate>) -> u64 {
     // Longest first at each offset, so an outer file is seen before what it
-    // contains.
-    candidates.sort_by(|a, b| a.offset.cmp(&b.offset).then(b.length.cmp(&a.length)));
+    // contains, and where two candidates cover exactly the same bytes the one
+    // that had to match more header wins.
+    //
+    // That last tiebreak is not cosmetic. An M4A matches `ftyp` at offset 4 and
+    // `ftypM4A ` at offset 4; both produce a candidate at the same offset with
+    // the same length, one suppresses the other as contained, and without a
+    // rule it is whichever the database happened to list first. Before this,
+    // every .m4a carved as .mp4.
+    candidates.sort_by(|a, b| {
+        a.offset
+            .cmp(&b.offset)
+            .then(b.length.cmp(&a.length))
+            .then(b.header_span.cmp(&a.header_span))
+    });
 
     let mut keep: Vec<Candidate> = Vec::with_capacity(candidates.len());
     let mut dropped = 0u64;
@@ -728,6 +752,41 @@ mod tests {
         assert_eq!(r.stats.strategy, "memchr");
         assert_eq!(r.stats.signatures, 1);
         assert_eq!(r.candidates.len(), 1);
+    }
+
+    /// Two signatures describing the same bytes: the more specific one is the
+    /// one reported.
+    #[test]
+    fn the_more_specific_signature_wins_at_the_same_offset() {
+        // An MP4 whose brand is M4A matches `ftyp` (4 bytes at offset 4) and
+        // `ftypM4A ` (8 bytes at offset 4).
+        let mut f = 24u32.to_be_bytes().to_vec();
+        f.extend_from_slice(b"ftypM4A ");
+        f.extend_from_slice(&512u32.to_be_bytes());
+        f.extend_from_slice(b"M4A isom");
+        let mut v = f.clone();
+        v.extend_from_slice(&40u32.to_be_bytes());
+        v.extend_from_slice(b"moov");
+        v.extend_from_slice(&[0x11; 32]);
+        v.extend_from_slice(&200u32.to_be_bytes());
+        v.extend_from_slice(b"mdat");
+        v.extend_from_slice(&[0x22; 192]);
+
+        let img = image(&[(8192, v.clone())], 64 * 1024);
+        let r = run(img.path(), ScanOptions::default());
+
+        let at: Vec<&Candidate> = r.candidates.iter().filter(|c| c.offset == 8192).collect();
+        assert_eq!(
+            at.len(),
+            1,
+            "expected one candidate for one file, got {:?}",
+            at.iter().map(|c| &c.signature_id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            at[0].signature_id, "m4a",
+            "the eight-byte ftypM4A match should beat the four-byte ftyp one"
+        );
+        assert_eq!(at[0].length, v.len() as u64);
     }
 
     #[test]

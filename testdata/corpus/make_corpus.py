@@ -801,7 +801,14 @@ FRAG_CORPUS = [
     ("frag/large_d.png", "png", lambda: make_png(640, 480, 9004)),
 ]
 
-SETS = {"basic": CORPUS, "frag": FRAG_CORPUS}
+# One file per carvable format, for the format-coverage fixture. Kept in a
+# separate module because it is a different kind of thing: the basic corpus is
+# small and deliberately hard, this one is broad and deliberately ordinary.
+from formats import FORMAT_ITEMS, self_check as formats_self_check  # noqa: E402
+
+FORMATS_CORPUS = list(FORMAT_ITEMS)
+
+SETS = {"basic": CORPUS, "frag": FRAG_CORPUS, "formats": FORMATS_CORPUS}
 
 # Every deleted path must be a real corpus path. Without this a typo, or two
 # spellings of the same name in different Unicode normalisation forms, silently
@@ -920,6 +927,23 @@ def main(argv):
         json.dump(provenance(), sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
         return 0
+    if "--check-formats" in flags:
+        # Every format sample must start with its own signature and be large
+        # enough that NTFS stores it in clusters rather than resident in the MFT
+        # record - a resident file is unrecoverable by carving however good the
+        # carver is, so a corpus of tiny samples would measure nothing.
+        problems = formats_self_check()
+        for problem in problems:
+            sys.stderr.write("FORMAT SAMPLE: " + problem + "\n")
+        if problems:
+            return 1
+        kinds = sorted({k for _, k, _ in FORMAT_ITEMS})
+        sys.stdout.write(
+            "%d format samples, %d distinct formats, all clear\n"
+            % (len(FORMAT_ITEMS), len(kinds))
+        )
+        sys.stdout.write(" ".join(kinds) + "\n")
+        return 0
     if "--fragment-target" in flags:
         sys.stdout.buffer.write(FRAGMENT_TARGET.encode("utf-8") + b"\n")
         return 0
@@ -930,10 +954,11 @@ def main(argv):
             which = a.split("=", 1)[1]
     if len(args) != 1 or which not in SETS:
         sys.stderr.write(
-            "usage: make_corpus.py [--set=basic|frag] OUTDIR\n"
+            "usage: make_corpus.py [--set=basic|frag|formats] OUTDIR\n"
             "       make_corpus.py --deleted-set\n"
             "       make_corpus.py --fragment-target\n"
             "       make_corpus.py --provenance\n"
+            "       make_corpus.py --check-formats\n"
         )
         return 2
     outdir = args[0]

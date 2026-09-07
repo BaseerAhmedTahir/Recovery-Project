@@ -55,6 +55,7 @@ fn candidate(i: u64) -> Candidate {
             ("restart_markers", "1512".to_string()),
         ],
         length_established: true,
+        header_span: 8,
     }
 }
 

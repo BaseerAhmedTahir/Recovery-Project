@@ -359,6 +359,7 @@ mod tests {
             detail: String::new(),
             evidence: vec![("width", "640".to_string()), ("height", "480".to_string())],
             length_established: true,
+            header_span: 8,
         }
     }
 
