@@ -1,0 +1,26 @@
+[package]
+name = "rc-index"
+description = "Disk-backed candidate index. Keeps peak memory flat as a scan grows."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc-carve.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+rc-device.workspace = true

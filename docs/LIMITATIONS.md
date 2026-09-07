@@ -168,6 +168,28 @@ minutes. A full `build_fixtures.sh` run takes roughly ten.
 
 ---
 
+### 2.6a The test suite needs the scanner optimised even in debug
+
+`Cargo.toml` sets `opt-level = 2` for `rc-carve`, `rc-index` and `rc-image` in
+the dev profile, not just for third-party dependencies. This is not tuning for
+its own sake: `rc-carve`'s inner loop runs over every byte of a 512 MiB fixture
+several times, and unoptimised that measured **3175 seconds** for one test
+binary against roughly 127 seconds optimised - a 25x difference, with identical
+results.
+
+A suite nobody will sit through stops being run, which fails the same way a
+suite that silently skips does. Debug assertions stay on for all three crates:
+they parse structures off a damaged disk, and an overflow check is worth more
+than a readable stack frame.
+
+The consequence to remember is the one that already cost time here: **any
+performance number measured in a debug build is meaningless**, because
+dependencies are optimised and workspace crates were not. That is how the
+prefilter's memchr/table threshold came to be set wrongly the first time. See
+section 3.6.
+
+---
+
 ### 2.7 The corpus is reproducible per toolchain, not across toolchains
 
 `make_corpus.py` is fully deterministic on a given machine: two consecutive

@@ -6,6 +6,7 @@ members = [
     "crates/rc-partition",
     "crates/rc-fs",
     "crates/rc-carve",
+    "crates/rc-index",
     "crates/rc-cli",
     "crates/xtask",
 ]
@@ -43,12 +44,19 @@ libc = "0.2"
 # --- parallelism ---
 rayon = "1"
 
+# --- storage ---
+# `bundled` compiles SQLite's amalgamation rather than linking a system copy,
+# so a recovery run cannot depend on what happens to be installed on the
+# machine it is run from. SPEC.md section 2 names this crate specifically.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # --- internal ---
 rc-device = { path = "crates/rc-device" }
 rc-image = { path = "crates/rc-image" }
 rc-partition = { path = "crates/rc-partition" }
 rc-fs = { path = "crates/rc-fs" }
 rc-carve = { path = "crates/rc-carve" }
+rc-index = { path = "crates/rc-index" }
 
 # Optimise dependencies even in dev/test builds while leaving our own crates
 # unoptimised and debuggable.
@@ -58,6 +66,27 @@ rc-carve = { path = "crates/rc-carve" }
 # a compiled one. Without this the test suite takes tens of minutes instead of
 # well under one.
 [profile.dev.package."*"]
+opt-level = 2
+
+# The scanner, for the same reason and by a wider margin.
+#
+# rc-carve's inner loop runs over every byte of a 512 MiB fixture, several
+# times, in three integration tests. Unoptimised that measured 3175 seconds -
+# fifty-three minutes for one test binary - against roughly two minutes in
+# release. A test suite nobody will sit through is a test suite that stops
+# being run, which is the same failure mode as one that silently skips.
+#
+# rc-index is here because it drives SQLite through hundreds of thousands of
+# inserts in the memory test, and rc-image because the immutability test hashes
+# gigabytes. Debug assertions stay on for all of them: these parse structures
+# off a damaged disk and an overflow check is worth more than a stack frame.
+[profile.dev.package.rc-carve]
+opt-level = 2
+
+[profile.dev.package.rc-index]
+opt-level = 2
+
+[profile.dev.package.rc-image]
 opt-level = 2
 
 # Release profile tuned for scanning throughput. Debug assertions stay on in

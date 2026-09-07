@@ -1,5 +1,6 @@
 //! Subcommand implementations. Each module owns its clap `Args` and a `run`.
 
+pub mod carve;
 pub mod devices;
 pub mod image;
 pub mod list_deleted;

@@ -289,6 +289,8 @@ Prerequisites (all of which gate the carving grade being meaningful):
 | Precision measured alongside recall | done for both: validators on two corpora, scanner on the quickformat fixture |
 | Multi-threaded scanner with a SIMD prefilter | done; prefilter threshold set by measurement |
 | Byte-exact recovery of contiguous files | done: 228 of 228 on the quick-formatted fixture |
+| Disk-backed candidate index (`rc-index`) | done: 10x the rows costs 1.28x the peak, against a 2.0x bar |
+| Peak RSS under 2 GB | done: 25 MiB at 500,000 candidates |
 | Throughput measurable | see below |
 | RSS ceiling testable | see below |
 
@@ -525,6 +527,36 @@ Two validators were written *because* of this measurement rather than from the
 format list: `ico` (3782 of 4060 candidates before it existed) and `pe` (50, in
 a fixture containing no executables).
 
+### rc-index: the memory criterion, measured
+
+SPEC.md section 5.8 requires peak RSS under ~2 GB regardless of drive size.
+The pass condition is sublinear with a named ratio: **ten times the candidates,
+no more than twice the peak.**
+
+| Candidates | Peak RSS growth |
+|---|---|
+| 50,000 | +14.3 MiB |
+| 500,000 | +18.3 MiB (25.0 MiB absolute) |
+| **Ratio for 10x the rows** | **1.28x** (bar: 2.0x) |
+
+Absolute peak is 25 MiB against a 2 GB ceiling.
+
+**The test has a control.** A memory test that passes is worthless unless it
+could have failed, so the identical measurement runs against a deliberately
+resident index - a plain `Vec<Candidate>` - and asserts that one *does* breach
+the ratio. It comes out at 21.15x. If the control ever stops failing, the
+measurement has lost its power and the real result means nothing.
+
+The first run failed at 3.94x, and the cause was not the index holding rows: it
+was the SQLite page cache I had set to 32 MiB, which had not finished filling
+at 50,000 candidates and had by 500,000. A sweep across cache sizes confirmed
+it - 32,000 KiB grew 8.3 then 26.2 MiB, while 8,000 KiB and below added nothing
+- so `PAGE_CACHE_KIB` is 8 MiB with the measurement written next to it. A carve
+is write-heavy; a large read cache buys little during the scan itself.
+
+The no-network audit still passes with SQLite in the tree: 117 packages, 40
+forbidden names, clean.
+
 ### The scanner's denominator
 
 **Validator figures must not be quoted anywhere near the scanner's.** Everything measured so far - 228/228 accepted, 0
@@ -548,6 +580,18 @@ test therefore reports:
    reach all 111.
 4. The count surviving validation, as a separate line from the count generated,
    so the validators' contribution is visible rather than assumed.
+
+**Still open for Milestone 3:**
+
+* **Carve 20+ formats from a quick-formatted fixture.** The acceptance
+  criterion names a number the current fixture cannot reach: it holds six
+  formats (docx, jpg, mp4, pdf, png, sqlite) and all six are recovered. Getting
+  to 20 means folding the independent corpus - ImageMagick and ffmpeg already
+  produce ico, bmp, webp, wav, avi, gif and tiff - into the images themselves,
+  which is a fixture rebuild.
+* **A throughput number that describes something.** See below.
+* **`rc-cli carve`**, wiring the scanner to the index. SPEC.md is explicit
+  that the CLI is the source of truth and everything must be reachable there.
 
 Then:
 

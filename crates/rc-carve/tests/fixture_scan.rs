@@ -14,7 +14,7 @@
 //! only checked against a threshold tells you nothing about whether the
 //! threshold was set sensibly.
 
-use rc_carve::scan::{scan, ScanOptions};
+use rc_carve::scan::{scan, ScanOptions, ScanResult};
 use rc_carve::SignatureDb;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -59,41 +59,102 @@ fn sha256(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
 
+/// Every scan of the 512 MiB fixture, run once for the process.
+///
+/// Each of these takes over two minutes in a debug build, and the tests below
+/// wanted five between them. Sharing is not only faster: it means every test
+/// is describing the *same* scan, so two of them can no longer disagree
+/// because one happened to run against a differently-cached page.
+///
+/// The image hash is taken before and after all of them, which is a stronger
+/// immutability check than one scan would give.
+struct Scans {
+    img: PathBuf,
+    expected: Expected,
+    /// Header matches only, validators off, nothing suppressed.
+    raw: ScanResult,
+    /// The default configuration - what a user gets.
+    full: ScanResult,
+    /// Default but with containment suppression disabled.
+    unsuppressed: ScanResult,
+    device: Arc<dyn rc_device::ReadOnlyDevice>,
+    sha_before: String,
+    sha_after: String,
+}
+
+static SCANS: std::sync::OnceLock<Option<Scans>> = std::sync::OnceLock::new();
+
+fn scans() -> Option<&'static Scans> {
+    SCANS
+        .get_or_init(|| {
+            let (img, expected) = load("quickformat")?;
+            let _lock = rc_device::testutil::lock_fixtures(&fixture_dir()).ok();
+
+            let sha_before = sha256(&std::fs::read(&img).expect("read fixture"));
+
+            let db = SignatureDb::builtin().expect("builtin db");
+            let device = rc_device::open(&img, None).expect("open fixture");
+            let end = device.total_sectors() * device.sector_size().get() as u64;
+            let device: Arc<dyn rc_device::ReadOnlyDevice> = Arc::from(device);
+
+            let raw = scan(
+                Arc::clone(&device),
+                &db,
+                0,
+                end,
+                &ScanOptions {
+                    validate: false,
+                    suppress_contained: false,
+                    ..Default::default()
+                },
+            )
+            .expect("raw scan");
+
+            let full = scan(Arc::clone(&device), &db, 0, end, &ScanOptions::default())
+                .expect("validated scan");
+
+            let unsuppressed = scan(
+                Arc::clone(&device),
+                &db,
+                0,
+                end,
+                &ScanOptions {
+                    suppress_contained: false,
+                    ..Default::default()
+                },
+            )
+            .expect("unsuppressed scan");
+
+            let sha_after = sha256(&std::fs::read(&img).expect("read fixture"));
+
+            Some(Scans {
+                img,
+                expected,
+                raw,
+                full,
+                unsuppressed,
+                device,
+                sha_before,
+                sha_after,
+            })
+        })
+        .as_ref()
+}
+
 /// The headline measurement.
 #[test]
 fn quickformat_carve_reports_its_own_denominator() {
-    let Some((img, exp)) = load("quickformat") else {
+    let Some(sc) = scans() else {
         eprintln!(
             "note: quickformat fixture not built; run testdata/build_fixtures.sh.\n\
              This test measures scanner precision and cannot be substituted for."
         );
         return;
     };
-    let _lock = rc_device::testutil::lock_fixtures(&fixture_dir()).ok();
-
-    let db = SignatureDb::builtin().expect("builtin db");
-    let device = rc_device::open(&img, None).expect("open fixture");
-    let end = device.total_sectors() * device.sector_size().get() as u64;
-    let device: Arc<dyn rc_device::ReadOnlyDevice> = Arc::from(device);
-
-    // Two runs: raw header matches, then the same scan with validators on. The
+    // Raw header matches against the same scan with validators on. The
     // difference between them is the validators' contribution, and reporting
     // one without the other would credit the scanner for their work.
-    let raw = scan(
-        Arc::clone(&device),
-        &db,
-        0,
-        end,
-        &ScanOptions {
-            validate: false,
-            suppress_contained: false,
-            ..Default::default()
-        },
-    )
-    .expect("raw scan");
-
-    let full = scan(Arc::clone(&device), &db, 0, end, &ScanOptions::default())
-        .expect("validated scan");
+    let (raw, full, exp, device) = (&sc.raw, &sc.full, &sc.expected, &sc.device);
     let s = &full.stats;
 
     eprintln!("\n=== quickformat carve ===");
@@ -226,49 +287,30 @@ fn quickformat_carve_reports_its_own_denominator() {
 }
 
 /// Whatever else changes, the scan must not write to the source.
+///
+/// The hashes bracket *all three* scans rather than one, so this covers the
+/// validated path, the unvalidated path and the unsuppressed path together.
 #[test]
 fn carving_does_not_modify_the_fixture() {
-    let Some((img, _)) = load("quickformat") else {
+    let Some(sc) = scans() else {
         return;
     };
-    let _lock = rc_device::testutil::lock_fixtures(&fixture_dir()).ok();
-
-    let before = sha256(&std::fs::read(&img).expect("read fixture"));
-    {
-        let db = SignatureDb::builtin().expect("builtin db");
-        let device = rc_device::open(&img, None).expect("open");
-        let end = device.total_sectors() * device.sector_size().get() as u64;
-        let device: Arc<dyn rc_device::ReadOnlyDevice> = Arc::from(device);
-        let _ = scan(device, &db, 0, end, &ScanOptions::default()).expect("scan");
-    }
-    let after = sha256(&std::fs::read(&img).expect("read fixture"));
-    assert_eq!(before, after, "carving modified the source image");
+    assert_eq!(
+        sc.sha_before,
+        sc.sha_after,
+        "carving modified {}",
+        sc.img.display()
+    );
 }
 
 /// Containment suppression is the only answer to a thumbnail inside a photo:
 /// both are genuinely valid JPEGs, so no validator can reject either.
 #[test]
 fn contained_candidates_are_suppressed_and_counted() {
-    let Some((img, _)) = load("quickformat") else {
+    let Some(sc) = scans() else {
         return;
     };
-    let _lock = rc_device::testutil::lock_fixtures(&fixture_dir()).ok();
-
-    let db = SignatureDb::builtin().expect("builtin db");
-    let device = rc_device::open(&img, None).expect("open");
-    let end = device.total_sectors() * device.sector_size().get() as u64;
-    let device: Arc<dyn rc_device::ReadOnlyDevice> = Arc::from(device);
-
-    let with = scan(Arc::clone(&device), &db, 0, end, &ScanOptions::default())
-        .expect("scan");
-    let without = scan(
-        Arc::clone(&device),
-        &db,
-        0,
-        end,
-        &ScanOptions { suppress_contained: false, ..Default::default() },
-    )
-    .expect("scan");
+    let (with, without) = (&sc.full, &sc.unsuppressed);
 
     eprintln!(
         "\ncontainment suppression: {} candidates without, {} with ({} dropped)",

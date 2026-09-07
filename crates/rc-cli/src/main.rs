@@ -4,7 +4,7 @@
 //! client over the same library." Every capability lands here first.
 //!
 //! Milestone 1 shipped `devices`, `image`, `verify` and the opt-in `smoke`
-//! check. Milestone 2 adds `list-deleted`.
+//! check. Milestone 2 added `list-deleted`. Milestone 3 adds `carve`.
 
 mod cmd;
 mod output;
@@ -57,6 +57,15 @@ enum Command {
     #[command(name = "list-deleted")]
     ListDeleted(cmd::list_deleted::Args),
 
+    /// Carve files out of raw sectors by signature, without needing a
+    /// filesystem.
+    ///
+    /// Reports candidates per GB scanned alongside the recovered count,
+    /// because a carve is judged by its denominator: a run that emits eighty
+    /// thousand candidates and happens to include the files you wanted has
+    /// perfect recall and no value.
+    Carve(cmd::carve::Args),
+
     /// Read a few sectors from a real device to prove the unbuffered read path
     /// works on this hardware. Opt-in, never run by CI.
     Smoke(cmd::smoke::Args),
@@ -71,6 +80,7 @@ fn main() {
         Command::Image(a) => cmd::image::run(a, cli.json),
         Command::Verify(a) => cmd::verify::run(a, cli.json),
         Command::ListDeleted(a) => cmd::list_deleted::run(a, cli.json),
+        Command::Carve(a) => cmd::carve::run(a, cli.json),
         Command::Smoke(a) => cmd::smoke::run(a, cli.json),
     };
 
