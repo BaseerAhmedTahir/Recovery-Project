@@ -19,3 +19,6 @@ rayon.workspace = true
 rc-device = { path = "../rc-device", features = ["test-util"] }
 sha2.workspace = true
 hex.workspace = true
+# The format-coverage test locates each sample by searching the image for its
+# content: a quick-formatted volume has no metadata to ask where a file went.
+memchr = "2"

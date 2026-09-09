@@ -135,11 +135,65 @@ def make_zip(seed):
     return buf.getvalue()
 
 
+def _wal_checksum(data, s0, s1, big_endian):
+    """SQLite's WAL checksum, from the file-format spec.
+
+    Two 32-bit accumulators walked over the data as pairs of words, with
+    wraparound. The magic's low bit selects the word order, which is the same
+    bit that makes the WAL signature need a mask.
+    """
+    fmt = ">II" if big_endian else "<II"
+    for i in range(0, len(data), 8):
+        x0, x1 = struct.unpack(fmt, data[i : i + 8])
+        s0 = (s0 + x0 + s1) & 0xFFFFFFFF
+        s1 = (s1 + x1 + s0) & 0xFFFFFFFF
+    return s0, s1
+
+
+def _pin_wal_salt(wal, salt1=0x5245_434F, salt2=0x5645_5259):
+    """Replace the random salt and repair every checksum that depended on it.
+
+    SQLite randomises Salt-1 and Salt-2 in each WAL header, and both the header
+    checksum and every frame checksum are computed over them - 207 bytes of a
+    49 KiB file change between runs. A corpus that is not reproducible cannot
+    have ground truth recorded against it, so the salt is pinned here and the
+    checksums are recomputed rather than left stale. The result is still a valid
+    WAL; only the salt is ours.
+    """
+    page_size = struct.unpack(">I", wal[8:12])[0]
+    big_endian = (struct.unpack(">I", wal[0:4])[0] & 1) == 0
+
+    out = bytearray(wal)
+    out[16:20] = struct.pack(">I", salt1)
+    out[20:24] = struct.pack(">I", salt2)
+    s0, s1 = _wal_checksum(bytes(out[0:24]), 0, 0, big_endian)
+    out[24:28] = struct.pack(">I", s0)
+    out[28:32] = struct.pack(">I", s1)
+
+    frame = 32
+    stride = 24 + page_size
+    while frame + stride <= len(out):
+        out[frame + 8 : frame + 12] = struct.pack(">I", salt1)
+        out[frame + 12 : frame + 16] = struct.pack(">I", salt2)
+        # The frame checksum chains from the previous one and covers the first
+        # eight bytes of the frame header plus the whole page.
+        s0, s1 = _wal_checksum(bytes(out[frame : frame + 8]), s0, s1, big_endian)
+        s0, s1 = _wal_checksum(
+            bytes(out[frame + 24 : frame + stride]), s0, s1, big_endian
+        )
+        out[frame + 16 : frame + 20] = struct.pack(">I", s0)
+        out[frame + 20 : frame + 24] = struct.pack(">I", s1)
+        frame += stride
+    return bytes(out)
+
+
 def make_sqlite_wal(seed):
-    """A real write-ahead log, written by SQLite.
+    """A real write-ahead log, written by SQLite, with its salt pinned.
 
     Left uncheckpointed on purpose: the point is the -wal file's own header,
-    whose magic selects checksum endianness in its low bit.
+    whose magic selects checksum endianness in its low bit. The salt is
+    replaced afterwards and the checksums recomputed - see _pin_wal_salt - so
+    that the sample is reproducible, which SQLite's own output is not.
     """
     d = tempfile.mkdtemp()
     path = os.path.join(d, "wal.db")
@@ -162,7 +216,7 @@ def make_sqlite_wal(seed):
         os.rmdir(d)
     except OSError:
         pass
-    return data
+    return _pin_wal_salt(data)
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +771,13 @@ def self_check():
     problems = []
     for path, kind, build in FORMAT_ITEMS:
         data = build()
+        # Build it twice. A sample that differs between runs cannot have ground
+        # truth recorded against it, and the failure is silent: the fixture is
+        # written from one run and every later check compares against another.
+        # SQLite's WAL was exactly this - a random salt, and 207 bytes of a
+        # 49 KiB file moving underneath it.
+        if build() != data:
+            problems.append("%s is not reproducible: two builds differ" % path)
         if len(data) < MIN_BYTES:
             problems.append(
                 "%s is %d bytes, under the %d-byte resident-file threshold"

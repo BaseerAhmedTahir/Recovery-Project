@@ -279,3 +279,172 @@ fn validated_formats_are_recovered_byte_exactly() {
         recovered.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// the same corpus, but out of a volume a filesystem actually formatted
+// ---------------------------------------------------------------------------
+
+fn fixture_dir() -> PathBuf {
+    workspace_root().join("testdata").join("fixtures")
+}
+
+/// Milestone 3's format criterion, against a real quick-formatted NTFS volume.
+///
+/// The synthetic test above lays samples at cluster boundaries with zeroed gaps
+/// and no filesystem at all. This one carves them out of a volume that was
+/// formatted, populated, and then quick-reformatted - so the samples sit where
+/// NTFS chose to put them, surrounded by whatever the driver left behind, with
+/// two generations of filesystem metadata in the image.
+///
+/// **Two numbers, because they are two different claims.**
+///
+/// *Located* means a candidate was emitted at the offset where the file's bytes
+/// actually begin, with the right signature. That proves the signature fires
+/// and the scanner finds it.
+///
+/// *Recovered* means the carved bytes hash to the original. That additionally
+/// needs the file's **end**, and only a validator can establish one. Thirty of
+/// the forty-four signatures are header-match-only, so for those the carver
+/// knows where a file starts and not where it stops.
+///
+/// Reporting only the first number would be the "80,000 candidates with perfect
+/// recall" failure in a different costume.
+#[test]
+fn formats_are_carved_from_a_real_quick_formatted_volume() {
+    use sha2::{Digest, Sha256};
+
+    let img = fixture_dir().join("formats.img");
+    let json = fixture_dir().join("formats.expected.json");
+    if !img.exists() || !json.exists() {
+        eprintln!(
+            "note: the formats fixture is not built; run\\n  \\
+             ./testdata/build_fixtures.sh formats\\n\\
+             This measures format coverage against a real volume and cannot be \\
+             substituted for by the synthetic image."
+        );
+        return;
+    }
+    let _lock = rc_device::testutil::lock_fixtures(&fixture_dir()).ok();
+
+    let expected: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).expect("read expected"))
+            .expect("parse expected");
+
+    // The corpus is regenerated rather than read out of the manifest, because
+    // the manifest holds hashes and this needs the bytes: locating a sample in
+    // an image with no filesystem metadata means searching for its content.
+    let (_synthetic_img, samples) = image();
+    let by_kind: BTreeMap<&str, &Sample> =
+        samples.iter().map(|s| (s.kind.as_str(), s)).collect();
+
+    let mut want: BTreeMap<String, String> = BTreeMap::new(); // sha256 -> kind
+    for (_path, meta) in expected["files"].as_object().expect("files") {
+        want.insert(
+            meta["sha256"].as_str().unwrap_or_default().to_string(),
+            meta["kind"].as_str().unwrap_or_default().to_string(),
+        );
+    }
+    assert!(!want.is_empty(), "the fixture manifest is empty");
+
+    let raw = std::fs::read(&img).expect("read image");
+    let db = SignatureDb::builtin().expect("builtin db");
+    let device = rc_device::open(&img, None).expect("open fixture");
+    let end = device.total_sectors() * device.sector_size().get() as u64;
+    let device: Arc<dyn rc_device::ReadOnlyDevice> = Arc::from(device);
+
+    let before = Sha256::digest(&raw);
+    let result = scan(Arc::clone(&device), &db, 0, end, &ScanOptions::default())
+        .expect("scan");
+    let after = Sha256::digest(std::fs::read(&img).expect("re-read image"));
+    assert_eq!(before, after, "carving modified the fixture");
+
+    let mut at_offset: BTreeMap<u64, Vec<&rc_carve::scan::Candidate>> = BTreeMap::new();
+    for c in &result.candidates {
+        at_offset.entry(c.offset).or_default().push(c);
+    }
+
+    // Where each sample actually landed. NTFS chose these offsets, so they have
+    // to be found by content: the first 48 bytes of each sample include its
+    // seeded filler and are unique across the corpus.
+    let mut located = BTreeSet::new();
+    let mut unplaced = Vec::new();
+    for (kind, s) in &by_kind {
+        let probe = &s.bytes[..48.min(s.bytes.len())];
+        match memchr::memmem::find(&raw, probe) {
+            None => unplaced.push(format!("{kind}: its bytes are not in the image at all")),
+            Some(off) => {
+                let hit = at_offset
+                    .get(&(off as u64))
+                    .map(|v| v.iter().any(|c| c.signature_id == **kind))
+                    .unwrap_or(false);
+                if hit {
+                    located.insert((*kind).to_string());
+                } else {
+                    unplaced.push(format!(
+                        "{kind}: present at offset {off} but no candidate with that signature"
+                    ));
+                }
+            }
+        }
+    }
+
+    // Recovered: the carved bytes hash to the original.
+    let mut recovered: BTreeSet<String> = BTreeSet::new();
+    let mut buf = Vec::new();
+    for c in &result.candidates {
+        if c.length == 0 || c.length > (16 << 20) {
+            continue;
+        }
+        buf.resize(c.length as usize, 0);
+        if device.read_bytes_at(c.offset, &mut buf).unwrap_or(0) as u64 != c.length {
+            continue;
+        }
+        if let Some(kind) = want.get(&hex::encode(Sha256::digest(&buf))) {
+            recovered.insert(kind.clone());
+        }
+    }
+
+    let all: BTreeSet<String> = by_kind.keys().map(|k| (*k).to_string()).collect();
+    let unsized_: Vec<&String> = located.difference(&recovered).collect();
+
+    eprintln!("\\n=== formats carved from a quick-formatted NTFS volume ===");
+    eprintln!(
+        "  scanned            : {:.0} MiB, {} header matches ({:.0} per GB)",
+        result.stats.bytes_scanned as f64 / (1024.0 * 1024.0),
+        result.stats.header_matches,
+        result.stats.header_matches_per_gb()
+    );
+    eprintln!("  candidates emitted : {}", result.candidates.len());
+    eprintln!("  LOCATED            : {} of {} formats", located.len(), all.len());
+    eprintln!("  RECOVERED exactly  : {} of {} formats", recovered.len(), all.len());
+    if !unsized_.is_empty() {
+        eprintln!(
+            "  located but not sized ({}): {:?}",
+            unsized_.len(),
+            unsized_
+        );
+        eprintln!("    These are header-match-only signatures. The carver knows");
+        eprintln!("    where the file starts and has nothing to tell it where it ends.");
+    }
+
+    assert!(
+        unplaced.is_empty(),
+        "{} format(s) are in the image but were not located:\\n  {}",
+        unplaced.len(),
+        unplaced.join("\\n  ")
+    );
+    assert!(
+        located.len() >= 20,
+        "Milestone 3 requires 20+ formats carved from a quick-formatted fixture; \\
+         located {} of {}",
+        located.len(),
+        all.len()
+    );
+    // Byte-exact recovery, for every format whose structure permits a length.
+    // This number is the one to watch: it rises only by writing validators.
+    assert!(
+        recovered.len() >= 10,
+        "byte-exact recovery fell to {} formats; it was 10",
+        recovered.len()
+    );
+}

@@ -63,6 +63,7 @@ ALL_FIXTURES=(
     ext4-basic
     fragmented-jpeg
     quickformat
+    formats
     overwritten
     nopart
 )
@@ -585,6 +586,50 @@ Check that mkfs.ntfs is being invoked with -Q."
 # Populate, delete everything, then overwrite part of the free space so some
 # deleted files are provably destroyed and others provably intact. This is the
 # fixture the Milestone 5 Green/Yellow/Red classifier is graded against.
+# One file of every carvable format, then a quick reformat.
+#
+# The basic corpus is deliberately hard and deliberately narrow: six carvable
+# formats chosen for awkward structure. This is the other axis - broad and
+# ordinary - and it exists so that a signature which cannot fire is a failing
+# test rather than a line of JSON nobody reads. The `vhd` entry read "connecti"
+# for a cookie that is "conectix" and could never have matched anything; it was
+# found by eye. This fixture is the guard.
+#
+# Every sample is at least 8 KiB by construction, because NTFS keeps a smaller
+# file's data inside its MFT record and a quick format discards the MFT. A
+# corpus of small samples would test nothing at all, and would pass while doing
+# it.
+build_formats() {
+    local name="formats" fs="ntfs"
+    local img="$OUT_DIR/$name.img"
+    rc_step "$name (one file per format on $fs, then quick reformat)"
+
+    rc_image_create "$img" >/dev/null
+    local dev mp
+    dev="$(rc_loop_attach "$img")"
+    rc_mkfs "$fs" "$dev" RCFMTORIG
+    mp="$(rc_mount "$fs" "$dev")"
+    populate_corpus "$mp" "$FORMATS_DIR"
+    verify_populated "$mp" "$FORMATS_DIR"
+    rc_umount "$mp"
+
+    rc_log "quick-reformatting (metadata discarded, content left in place)"
+    rc_mkfs "$fs" "$dev" RCFMTWIPED
+    rc_loop_detach "$dev"
+
+    # Same guard as the quickformat fixture: a format that zeroed the volume
+    # would leave a fixture that tests nothing and passes silently.
+    local survived
+    survived="$(fragment_check "$img" "$FORMATS_DIR/formats/sample.gz")"
+    rc_log "post-format content check: formats/sample.gz is $survived"
+    [[ "$survived" == "absent" ]] && rc_die \
+        "the quick format destroyed the file content; this fixture would test nothing."
+
+    RC_ALL_DELETED=1 write_all_deleted_expected "$name" "$fs" "$img" \
+        "One file of every format in the signature database, written to an NTFS volume and then quick-reformatted. All filesystem metadata is gone; content remains. This is the format-coverage half of the Milestone 3 criterion - the basic corpus covers depth, this covers breadth." \
+        "$FORMATS_MANIFEST"
+}
+
 build_overwritten() {
     local name="overwritten" fs="ntfs"
     local img="$OUT_DIR/$name.img"
@@ -691,12 +736,14 @@ build_nopart() {
 # Shared writer for fixtures where every corpus file counts as unrecoverable
 # through metadata (quick-format).
 write_all_deleted_expected() {
-    local name="$1" fs="$2" img="$3" notes="$4"
+    # The manifest defaults to the basic corpus; the formats fixture passes its
+    # own, because it holds a different set of files entirely.
+    local name="$1" fs="$2" img="$3" notes="$4" manifest="${5:-$CORPUS_MANIFEST}"
     RC_NAME="$name" RC_FS="$fs" RC_IMG="$img" \
     RC_SHA="$(rc_sha256 "$img")" RC_BYTES="$(stat -c %s "$img")" \
     RC_SECTOR="$RC_SECTOR_BYTES" RC_CLUSTER="$RC_CLUSTER_BYTES" \
     RC_GENVER="$GENERATOR_VERSION" RC_NOTES="$notes" \
-    python3 - "$CORPUS_MANIFEST" > "${img%.img}.expected.json" <<'PY'
+    python3 - "$manifest" > "${img%.img}.expected.json" <<'PY'
 import json, os, sys, datetime
 corpus = json.load(open(sys.argv[1]))
 files = {p: {"sha256": m["sha256"], "size": m["size"], "kind": m["kind"],
@@ -807,6 +854,14 @@ main() {
     python3 "$CORPUS_PY" "$CORPUS_DIR" > "$CORPUS_MANIFEST"
     rc_log "basic corpus: $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CORPUS_MANIFEST") files"
     python3 "$CORPUS_PY" --set=frag "$FRAG_DIR" > "$FRAG_MANIFEST"
+
+    # The format-coverage corpus. Self-checked first: every sample must start
+    # with its own signature and clear the resident-file threshold, and a
+    # failure there means the fixture would silently prove nothing.
+    python3 "$CORPUS_PY" --check-formats >&2 || rc_die "the format samples failed their self-check"
+    FORMATS_DIR="$work/formats"
+    FORMATS_MANIFEST="$work/formats.json"
+    python3 "$CORPUS_PY" --set=formats "$FORMATS_DIR" > "$FORMATS_MANIFEST"
     rc_log "frag corpus:  $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$FRAG_MANIFEST") files"
 
     local f
@@ -818,6 +873,7 @@ main() {
             ext4-basic)      build_basic ext4-basic  ext4  RCEXT4 ;;
             fragmented-jpeg) build_fragmented ;;
             quickformat)     build_quickformat ;;
+            formats)         build_formats ;;
             overwritten)     build_overwritten ;;
             nopart)          build_nopart ;;
             *) rc_die "unknown fixture: $f (see --list)" ;;
