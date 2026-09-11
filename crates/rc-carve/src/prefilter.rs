@@ -124,9 +124,7 @@ impl Prefilter {
             Prefilter::Two(a, b) => Some(vec![*a, *b]),
             Prefilter::Three(a, b, c) => Some(vec![*a, *b, *c]),
             Prefilter::Multi(v) => Some(v.clone()),
-            Prefilter::Table(t) => Some(
-                (0..=255u8).filter(|b| t[*b as usize]).collect(),
-            ),
+            Prefilter::Table(t) => Some((0..=255u8).filter(|b| t[*b as usize]).collect()),
         }
     }
 
@@ -344,7 +342,12 @@ mod tests {
                 .filter(|(_, b)| needles.contains(b))
                 .map(|(i, _)| i)
                 .collect();
-            assert_eq!(got, want, "strategy {} disagreed for {n} needles", p.strategy());
+            assert_eq!(
+                got,
+                want,
+                "strategy {} disagreed for {n} needles",
+                p.strategy()
+            );
         }
     }
 
@@ -359,7 +362,10 @@ mod tests {
         );
 
         let at_limit: Vec<u8> = (1..=MEMCHR_MAX_NEEDLES as u8).collect();
-        assert_eq!(Prefilter::for_bytes(&at_limit).strategy(), "memchr3-multipass");
+        assert_eq!(
+            Prefilter::for_bytes(&at_limit).strategy(),
+            "memchr3-multipass"
+        );
         let past_limit: Vec<u8> = (1..=MEMCHR_MAX_NEEDLES as u8 + 1).collect();
         assert_eq!(Prefilter::for_bytes(&past_limit).strategy(), "byte-table");
 

@@ -289,7 +289,15 @@ fn reader_thread(
             // going. rc-image's rescue pass is where read errors get retried;
             // here the point is not to abandon the rest of the device.
             Err(_) => {
-                if out.send(Block { start: pos, owned: 0, buf, filled: 0 }).is_err() {
+                if out
+                    .send(Block {
+                        start: pos,
+                        owned: 0,
+                        buf,
+                        filled: 0,
+                    })
+                    .is_err()
+                {
                     return;
                 }
                 pos += owned as u64;
@@ -298,7 +306,12 @@ fn reader_thread(
         };
 
         if out
-            .send(Block { start: pos, owned: owned.min(filled), buf, filled })
+            .send(Block {
+                start: pos,
+                owned: owned.min(filled),
+                buf,
+                filled,
+            })
             .is_err()
         {
             return;
@@ -389,7 +402,15 @@ pub fn scan(
     std::thread::scope(|scope| {
         let dev = Arc::clone(&device);
         scope.spawn(move || {
-            reader_thread(dev, start, end, opts.block_bytes, overlap, block_tx, recycle_rx);
+            reader_thread(
+                dev,
+                start,
+                end,
+                opts.block_bytes,
+                overlap,
+                block_tx,
+                recycle_rx,
+            );
         });
 
         let mut workers = Vec::new();
@@ -508,7 +529,9 @@ pub fn scan(
         if capped {
             stats.window_capped += 1;
         }
-        let got = device.read_bytes_at(h.offset, &mut buf[..want]).unwrap_or(0);
+        let got = device
+            .read_bytes_at(h.offset, &mut buf[..want])
+            .unwrap_or(0);
         let Some(mut out) = validate::validate(validator, &buf[..got]) else {
             continue;
         };
@@ -544,7 +567,10 @@ pub fn scan(
             offset: h.offset,
             length: out.length,
             signature_id: sig.id.clone(),
-            ext: out.refined_ext.map(|e| e.to_string()).unwrap_or_else(|| sig.ext.clone()),
+            ext: out
+                .refined_ext
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| sig.ext.clone()),
             category: sig.category,
             status: out.status,
             detail: out.detail,
@@ -650,7 +676,10 @@ mod tests {
         ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
         let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         v.extend(chunk(b"IHDR", &ihdr));
-        v.extend(chunk(b"IDAT", &[0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01]));
+        v.extend(chunk(
+            b"IDAT",
+            &[0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01],
+        ));
         v.extend(chunk(b"IEND", &[]));
         v
     }
@@ -719,7 +748,11 @@ mod tests {
         for block in [8 * 1024usize, 64 * 1024, 256 * 1024, 1 << 20] {
             let r = run(
                 img.path(),
-                ScanOptions { block_bytes: block, threads: Some(3), ..Default::default() },
+                ScanOptions {
+                    block_bytes: block,
+                    threads: Some(3),
+                    ..Default::default()
+                },
             );
             let mut got: Vec<(u64, u64)> = r
                 .candidates
@@ -754,9 +787,15 @@ mod tests {
         let r = run(img.path(), ScanOptions::default());
         let s = &r.stats;
         assert!(s.prefilter_hits >= s.header_matches);
-        assert_eq!(s.header_matches, s.validated + s.rejected + not_validated(&r));
+        assert_eq!(
+            s.header_matches,
+            s.validated + s.rejected + not_validated(&r)
+        );
         assert!(s.bytes_scanned >= 512 * 1024);
-        assert!(s.cache_warning().is_some(), "a 512 KiB image is cache-resident");
+        assert!(
+            s.cache_warning().is_some(),
+            "a 512 KiB image is cache-resident"
+        );
     }
 
     fn not_validated(r: &ScanResult) -> u64 {
@@ -828,13 +867,22 @@ mod tests {
         let inner = rc_device::open(img.path(), None).expect("open");
         // Not vec![0..65_536]: clippy reads a single Range in a vec literal as
         // a likely typo for a range of vecs.
-        let bad = vec![std::ops::Range { start: 0u64, end: 65_536u64 }];
+        let bad = vec![std::ops::Range {
+            start: 0u64,
+            end: 65_536u64,
+        }];
         let faulty = testutil::FaultyDevice::new(inner, bad);
         let end = 512 * 1024;
-        let r = scan(Arc::new(faulty), &db(), 0, end, &ScanOptions {
-            block_bytes: 64 * 1024,
-            ..Default::default()
-        })
+        let r = scan(
+            Arc::new(faulty),
+            &db(),
+            0,
+            end,
+            &ScanOptions {
+                block_bytes: 64 * 1024,
+                ..Default::default()
+            },
+        )
         .expect("scan should survive a read error");
         assert!(
             r.candidates.iter().any(|c| c.offset == 300_000),
@@ -854,10 +902,8 @@ mod tempfile_lite {
         pub fn with_bytes(data: &[u8]) -> Temp {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let p = std::env::temp_dir().join(format!(
-                "rc-carve-scan-{}-{n}.img",
-                std::process::id()
-            ));
+            let p =
+                std::env::temp_dir().join(format!("rc-carve-scan-{}-{n}.img", std::process::id()));
             std::fs::write(&p, data).expect("write scratch image");
             Temp(p)
         }

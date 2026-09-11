@@ -61,7 +61,9 @@ pub fn validate(d: &[u8]) -> Outcome {
     };
 
     if planes != 1 {
-        return Outcome::reject(format!("colour planes is {planes}; a BMP always declares 1"));
+        return Outcome::reject(format!(
+            "colour planes is {planes}; a BMP always declares 1"
+        ));
     }
     if !matches!(bpp, 1 | 4 | 8 | 16 | 24 | 32) {
         return Outcome::reject(format!("{bpp} bits per pixel is not a defined value"));
@@ -76,7 +78,11 @@ pub fn validate(d: &[u8]) -> Outcome {
     // Rows are padded to a four-byte boundary. For an uncompressed bitmap this
     // gives an exact expected size, which is the strongest check available
     // here: it ties three fields together at once.
-    let compression = if dib_size >= 40 { le32(d, 30).unwrap_or(0) } else { 0 };
+    let compression = if dib_size >= 40 {
+        le32(d, 30).unwrap_or(0)
+    } else {
+        0
+    };
     let row_bytes = (width as u64 * bpp as u64).div_ceil(32) * 4;
     let expected_pixels = row_bytes.saturating_mul(abs_h);
 

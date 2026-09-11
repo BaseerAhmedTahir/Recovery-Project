@@ -86,8 +86,7 @@ fn build_image() -> (PathBuf, Vec<Sample>) {
         "generating the format corpus failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("manifest json");
+    let manifest: serde_json::Value = serde_json::from_slice(&out.stdout).expect("manifest json");
     let entries = manifest.as_object().expect("manifest object");
 
     // Lay each sample at a cluster boundary with zeroed gaps, which is what a
@@ -227,8 +226,7 @@ fn validated_formats_are_recovered_byte_exactly() {
     let end = device.total_sectors() * device.sector_size().get() as u64;
     let device: Arc<dyn rc_device::ReadOnlyDevice> = Arc::from(device);
 
-    let result = scan(Arc::clone(&device), &db, 0, end, &ScanOptions::default())
-        .expect("scan");
+    let result = scan(Arc::clone(&device), &db, 0, end, &ScanOptions::default()).expect("scan");
 
     let want: BTreeMap<u64, &Sample> = samples.iter().map(|s| (s.offset, s)).collect();
     let mut recovered = BTreeSet::new();
@@ -239,7 +237,9 @@ fn validated_formats_are_recovered_byte_exactly() {
         if c.status != Status::Valid || c.length == 0 {
             continue;
         }
-        let Some(s) = want.get(&c.offset) else { continue };
+        let Some(s) = want.get(&c.offset) else {
+            continue;
+        };
         if c.signature_id != s.kind {
             continue;
         }
@@ -333,8 +333,7 @@ fn formats_are_carved_from_a_real_quick_formatted_volume() {
     // the manifest holds hashes and this needs the bytes: locating a sample in
     // an image with no filesystem metadata means searching for its content.
     let (_synthetic_img, samples) = image();
-    let by_kind: BTreeMap<&str, &Sample> =
-        samples.iter().map(|s| (s.kind.as_str(), s)).collect();
+    let by_kind: BTreeMap<&str, &Sample> = samples.iter().map(|s| (s.kind.as_str(), s)).collect();
 
     let mut want: BTreeMap<String, String> = BTreeMap::new(); // sha256 -> kind
     for (_path, meta) in expected["files"].as_object().expect("files") {
@@ -352,8 +351,7 @@ fn formats_are_carved_from_a_real_quick_formatted_volume() {
     let device: Arc<dyn rc_device::ReadOnlyDevice> = Arc::from(device);
 
     let before = Sha256::digest(&raw);
-    let result = scan(Arc::clone(&device), &db, 0, end, &ScanOptions::default())
-        .expect("scan");
+    let result = scan(Arc::clone(&device), &db, 0, end, &ScanOptions::default()).expect("scan");
     let after = Sha256::digest(std::fs::read(&img).expect("re-read image"));
     assert_eq!(before, after, "carving modified the fixture");
 
@@ -414,8 +412,16 @@ fn formats_are_carved_from_a_real_quick_formatted_volume() {
         result.stats.header_matches_per_gb()
     );
     eprintln!("  candidates emitted : {}", result.candidates.len());
-    eprintln!("  LOCATED            : {} of {} formats", located.len(), all.len());
-    eprintln!("  RECOVERED exactly  : {} of {} formats", recovered.len(), all.len());
+    eprintln!(
+        "  LOCATED            : {} of {} formats",
+        located.len(),
+        all.len()
+    );
+    eprintln!(
+        "  RECOVERED exactly  : {} of {} formats",
+        recovered.len(),
+        all.len()
+    );
     if !unsized_.is_empty() {
         eprintln!(
             "  located but not sized ({}): {:?}",

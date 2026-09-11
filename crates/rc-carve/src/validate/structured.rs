@@ -228,16 +228,14 @@ pub fn validate_tiff(d: &[u8]) -> Outcome {
             .with("strips", strip_offsets.len())
     };
     if end > d.len() as u64 {
-        return out(
-            Outcome::partial(
-                end,
-                format!(
-                    "the directories reach {end} but only {} bytes are available",
-                    d.len()
-                ),
-            )
-            .established(),
-        );
+        return out(Outcome::partial(
+            end,
+            format!(
+                "the directories reach {end} but only {} bytes are available",
+                d.len()
+            ),
+        )
+        .established());
     }
     out(Outcome::valid(end))
 }
@@ -368,17 +366,15 @@ pub fn validate_evtx(d: &[u8]) -> Outcome {
             .with("chunks", chunks)
     };
     if total > d.len() as u64 {
-        return out(
-            Outcome::partial(
-                total,
-                format!(
-                    "the header declares {chunks} chunk(s) = {total} bytes, but only {} \
+        return out(Outcome::partial(
+            total,
+            format!(
+                "the header declares {chunks} chunk(s) = {total} bytes, but only {} \
                      are available",
-                    d.len()
-                ),
-            )
-            .established(),
-        );
+                d.len()
+            ),
+        )
+        .established());
     }
     out(Outcome::valid(total))
 }
@@ -411,7 +407,9 @@ pub fn validate_reg_hive(d: &[u8]) -> Outcome {
         return Outcome::reject("the file format field is not 1 (direct memory load)");
     }
     if file_type > 1 {
-        return Outcome::reject(format!("file type {file_type} is not a primary or log hive"));
+        return Outcome::reject(format!(
+            "file type {file_type} is not a primary or log hive"
+        ));
     }
     if bins == 0 || bins % BASE != 0 {
         return Outcome::reject(format!(
@@ -425,16 +423,14 @@ pub fn validate_reg_hive(d: &[u8]) -> Outcome {
             .with("sequences_match", primary == secondary)
     };
     if total > d.len() as u64 {
-        return out(
-            Outcome::partial(
-                total,
-                format!(
-                    "the base block declares {total} bytes but only {} are available",
-                    d.len()
-                ),
-            )
-            .established(),
-        );
+        return out(Outcome::partial(
+            total,
+            format!(
+                "the base block declares {total} bytes but only {} are available",
+                d.len()
+            ),
+        )
+        .established());
     }
     out(Outcome::valid(total))
 }
@@ -639,7 +635,11 @@ pub fn validate_elf(d: &[u8]) -> Outcome {
     // Segments carry a file size directly.
     for i in 0..e_phnum.min(256) {
         let at = (e_phoff + i * e_phentsize) as usize;
-        let (off_at, filesz_at) = if wide { (at + 8, at + 32) } else { (at + 4, at + 16) };
+        let (off_at, filesz_at) = if wide {
+            (at + 8, at + 32)
+        } else {
+            (at + 4, at + 16)
+        };
         let (Some(off), Some(filesz)) = (wordat(off_at), wordat(filesz_at)) else {
             break;
         };
@@ -671,16 +671,14 @@ pub fn validate_elf(d: &[u8]) -> Outcome {
             .with("sections", e_shnum)
     };
     if end > d.len() as u64 {
-        return out(
-            Outcome::partial(
-                end,
-                format!(
-                    "the headers reach {end} but only {} bytes are available",
-                    d.len()
-                ),
-            )
-            .established(),
-        );
+        return out(Outcome::partial(
+            end,
+            format!(
+                "the headers reach {end} but only {} bytes are available",
+                d.len()
+            ),
+        )
+        .established());
     }
     out(Outcome::valid(end))
 }
@@ -731,8 +729,20 @@ mod tests {
     // --- TIFF --------------------------------------------------------------
 
     fn tiff(big: bool, w: u32, h: u32) -> Vec<u8> {
-        let pack16 = |v: u16| if big { v.to_be_bytes() } else { v.to_le_bytes() };
-        let pack32 = |v: u32| if big { v.to_be_bytes() } else { v.to_le_bytes() };
+        let pack16 = |v: u16| {
+            if big {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let pack32 = |v: u32| {
+            if big {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
         let strip = (w * h) as usize;
         let entries: [(u16, u16, u32); 8] = [
             (256, 3, w),

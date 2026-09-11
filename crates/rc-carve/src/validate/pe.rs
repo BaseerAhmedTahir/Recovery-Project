@@ -50,7 +50,9 @@ pub fn validate(d: &[u8]) -> Outcome {
     // The PE header cannot sit inside the DOS header, and a real one is a few
     // hundred bytes in at most.
     if !(4..=4096).contains(&lfanew) {
-        return Outcome::reject(format!("e_lfanew is {lfanew}, which is not a PE header offset"));
+        return Outcome::reject(format!(
+            "e_lfanew is {lfanew}, which is not a PE header offset"
+        ));
     }
     if d.len() < lfanew + 4 {
         return Outcome::partial(

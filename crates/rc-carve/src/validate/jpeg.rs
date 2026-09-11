@@ -220,14 +220,7 @@ pub fn validate(d: &[u8]) -> Outcome {
                         // marker, the last point the structure vouches for,
                         // which is also exactly where a reassembler has to look
                         // for the next fragment.
-                        return spliced(
-                            verified_to,
-                            run,
-                            limit,
-                            restart_interval,
-                            restarts,
-                            dims,
-                        );
+                        return spliced(verified_to, run, limit, restart_interval, restarts, dims);
                     }
                 }
                 if k + 1 >= d.len() {
@@ -345,8 +338,7 @@ fn out_of_sequence(
 /// Out of data, but we know what it is.
 fn truncated(at: usize, saw_sof: bool, saw_sos: bool, why: &str) -> Outcome {
     if saw_sof && saw_sos {
-        Outcome::partial(at as u64, format!("truncated: {why}"))
-            .with("truncated", true)
+        Outcome::partial(at as u64, format!("truncated: {why}")).with("truncated", true)
     } else {
         Outcome::reject(format!(
             "{why}, and no complete frame header and scan were seen first"
@@ -358,7 +350,10 @@ fn truncated(at: usize, saw_sof: bool, saw_sos: bool, why: &str) -> Outcome {
 /// for random data it happens almost immediately, which is the whole point.
 fn desync(at: usize, saw_sof: bool, saw_sos: bool) -> Outcome {
     if saw_sof && saw_sos {
-        Outcome::partial(at as u64, "the marker chain desynchronised after the scan began")
+        Outcome::partial(
+            at as u64,
+            "the marker chain desynchronised after the scan began",
+        )
     } else {
         Outcome::reject("the marker chain does not hold together; a chance FF D8 FF")
     }
@@ -411,7 +406,7 @@ mod tests {
         v.extend_from_slice(&64u16.to_be_bytes()); // height
         v.extend_from_slice(&64u16.to_be_bytes()); // width
         v.extend_from_slice(&[0x01, 0x01, 0x11, 0x00]); // 1 component, 1x1
-        // SOS: length 8 = 2 + ncomp + 2 + 3.
+                                                        // SOS: length 8 = 2 + ncomp + 2 + 3.
         v.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00]);
         for n in 0..intervals {
             // Entropy bytes that never contain 0xFF, so no stuffing is needed.
@@ -450,7 +445,10 @@ mod tests {
 
         let out = validate(&j);
         assert_eq!(out.status, Status::Partial, "{}", out.detail);
-        assert!(!out.length_established, "a splice point is a floor, not an end");
+        assert!(
+            !out.length_established,
+            "a splice point is a floor, not an end"
+        );
         assert_eq!(
             out.length, last_good as u64,
             "should stop at the last restart marker before the gap"

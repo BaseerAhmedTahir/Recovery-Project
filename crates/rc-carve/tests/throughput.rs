@@ -147,7 +147,8 @@ fn throughput_in_three_tiers() {
         while lba < total_sectors {
             let n = per.min(total_sectors - lba);
             let len = n as usize * ss;
-            dev.read_exact_at(rc_device::Lba(lba), &mut buf[..len]).expect("raw read");
+            dev.read_exact_at(rc_device::Lba(lba), &mut buf[..len])
+                .expect("raw read");
             read += len as u64;
             lba += n;
         }

@@ -14,7 +14,11 @@ fn table() -> &'static [u32; 256] {
         for (i, slot) in t.iter_mut().enumerate() {
             let mut c = i as u32;
             for _ in 0..8 {
-                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
             }
             *slot = c;
         }
@@ -77,8 +81,8 @@ mod tests {
         let data = [
             0, 0, 0, 1, // width 1
             0, 0, 0, 1, // height 1
-            8,    // bit depth
-            2,    // colour type: truecolour
+            8, // bit depth
+            2, // colour type: truecolour
             0, 0, 0, // compression, filter, interlace
         ];
         assert_eq!(crc32_parts(&[ty, &data]), 0x907753DE);

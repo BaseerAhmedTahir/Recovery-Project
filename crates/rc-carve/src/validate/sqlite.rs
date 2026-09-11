@@ -147,15 +147,17 @@ pub fn validate(d: &[u8]) -> Outcome {
     let declared = page_size as u64 * page_count as u64;
     if declared > d.len() as u64 {
         let whole = (d.len() as u64 / page_size as u64) * page_size as u64;
-        return evidence(Outcome::partial(
-            whole,
-            format!(
-                "the header declares {page_count} pages ({declared} bytes) but only {} \
+        return evidence(
+            Outcome::partial(
+                whole,
+                format!(
+                    "the header declares {page_count} pages ({declared} bytes) but only {} \
                  are available; truncated",
-                d.len()
-            ),
-        )
-        .with("truncated", true));
+                    d.len()
+                ),
+            )
+            .with("truncated", true),
+        );
     }
 
     let mut out = evidence(Outcome::valid(declared));
@@ -175,7 +177,11 @@ mod tests {
     fn db(page_size: u32, pages: u32, freelist: u32, trunk: u32, valid_size: bool) -> Vec<u8> {
         let mut h = vec![0u8; HEADER_LEN];
         h[..16].copy_from_slice(MAGIC);
-        let raw = if page_size == 65536 { 1u16 } else { page_size as u16 };
+        let raw = if page_size == 65536 {
+            1u16
+        } else {
+            page_size as u16
+        };
         h[16..18].copy_from_slice(&raw.to_be_bytes());
         h[18] = 1;
         h[19] = 1;

@@ -320,8 +320,15 @@ const BAR: f64 = 0.95;
 #[test]
 fn fixtures_record_the_toolchain_that_built_them() {
     let names = [
-        "ntfs-basic", "ntfs-windows", "fat32-basic", "exfat-basic",
-        "ext4-basic", "quickformat", "overwritten", "nopart", "fragmented-jpeg",
+        "ntfs-basic",
+        "ntfs-windows",
+        "fat32-basic",
+        "exfat-basic",
+        "ext4-basic",
+        "quickformat",
+        "overwritten",
+        "nopart",
+        "fragmented-jpeg",
     ];
     let mut without = Vec::new();
     let mut found = 0usize;
@@ -443,9 +450,16 @@ fn the_two_ntfs_drivers_agree_on_what_was_deleted() {
     // Files one driver's image gave up and the other's did not. Either
     // direction is a genuine finding: it means the parser depends on a layout
     // choice rather than on the format.
-    let only_in_basic: Vec<&String> = b.missing.iter().filter(|m| !a.missing.contains(m)).collect();
-    let only_in_windows: Vec<&String> =
-        a.missing.iter().filter(|m| !b.missing.contains(m)).collect();
+    let only_in_basic: Vec<&String> = b
+        .missing
+        .iter()
+        .filter(|m| !a.missing.contains(m))
+        .collect();
+    let only_in_windows: Vec<&String> = a
+        .missing
+        .iter()
+        .filter(|m| !b.missing.contains(m))
+        .collect();
     for m in &only_in_basic {
         eprintln!("  RECOVERED FROM ntfs-3g BUT NOT FROM THE MICROSOFT DRIVER: {m}");
     }

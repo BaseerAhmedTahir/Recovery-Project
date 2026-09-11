@@ -24,10 +24,8 @@ use std::path::PathBuf;
 /// An image whose every byte is a function of its offset, so a read from the
 /// wrong place is detectable rather than merely different.
 fn patterned_image(name: &str, len: usize) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "rc-unbuffered-{}-{name}.img",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("rc-unbuffered-{}-{name}.img", std::process::id()));
     let data: Vec<u8> = (0..len)
         .map(|i| {
             let x = i as u32;
@@ -60,7 +58,22 @@ fn unbuffered_reads_match_buffered_reads_at_every_alignment() {
     let mut compared = 0usize;
     // Sector-aligned LBAs (the trait's contract), including ones that are not
     // 4 KiB-aligned, which is the case the staging window exists for.
-    let lbas: Vec<u64> = vec![0, 1, 3, 7, 8, 9, 15, 63, 64, 65, 511, 1000, total - 8, total - 1];
+    let lbas: Vec<u64> = vec![
+        0,
+        1,
+        3,
+        7,
+        8,
+        9,
+        15,
+        63,
+        64,
+        65,
+        511,
+        1000,
+        total - 8,
+        total - 1,
+    ];
     // Lengths in sectors, including ones that straddle a 4 KiB boundary.
     let lens: Vec<u64> = vec![1, 2, 7, 8, 9, 16, 33, 256];
     // Buffer address skews: aligned, and deliberately not.
@@ -88,9 +101,7 @@ fn unbuffered_reads_match_buffered_reads_at_every_alignment() {
 
                 unbuffered
                     .read_exact_at(Lba(lba), window)
-                    .unwrap_or_else(|e| {
-                        panic!("unbuffered read lba {lba} n {n} skew {skew}: {e}")
-                    });
+                    .unwrap_or_else(|e| panic!("unbuffered read lba {lba} n {n} skew {skew}: {e}"));
 
                 if window[..] != expect[..] {
                     let first = window
@@ -110,7 +121,10 @@ fn unbuffered_reads_match_buffered_reads_at_every_alignment() {
         }
     }
     eprintln!("compared {compared} (lba, length, buffer-alignment) combinations");
-    assert!(compared > 400, "the grid was meant to be large; only {compared} ran");
+    assert!(
+        compared > 400,
+        "the grid was meant to be large; only {compared} ran"
+    );
 }
 
 /// Byte-offset reads go through a second layer of rounding in the trait's
@@ -134,7 +148,9 @@ fn unbuffered_byte_offset_reads_match_buffered() {
             let mut a = vec![0u8; len];
             let mut b = vec![0u8; len];
             let na = buffered.read_bytes_at(offset, &mut a).expect("buffered");
-            let nb = unbuffered.read_bytes_at(offset, &mut b).expect("unbuffered");
+            let nb = unbuffered
+                .read_bytes_at(offset, &mut b)
+                .expect("unbuffered");
             assert_eq!(na, nb, "byte counts differ at offset {offset} len {len}");
             assert_eq!(a, b, "bytes differ at offset {offset} len {len}");
             compared += 1;
@@ -158,8 +174,12 @@ fn large_aligned_block_reads_are_correct() {
     for lba in [0u64, (4 << 20) / 512] {
         let mut a = rc_device::AlignedBuf::new(block, 4096);
         let mut b = rc_device::AlignedBuf::new(block, 4096);
-        buffered.read_exact_at(Lba(lba), &mut a[..block]).expect("buffered");
-        unbuffered.read_exact_at(Lba(lba), &mut b[..block]).expect("unbuffered");
+        buffered
+            .read_exact_at(Lba(lba), &mut a[..block])
+            .expect("buffered");
+        unbuffered
+            .read_exact_at(Lba(lba), &mut b[..block])
+            .expect("unbuffered");
         assert!(a[..block] == b[..block], "4 MiB block at lba {lba} differs");
     }
 }
@@ -179,7 +199,8 @@ fn reading_unbuffered_does_not_modify_the_image() {
         let mut lba = 0u64;
         while lba < dev.total_sectors() {
             let n = (buf.len() / 512).min((dev.total_sectors() - lba) as usize);
-            dev.read_exact_at(Lba(lba), &mut buf[..n * 512]).expect("read");
+            dev.read_exact_at(Lba(lba), &mut buf[..n * 512])
+                .expect("read");
             lba += n as u64;
         }
     }

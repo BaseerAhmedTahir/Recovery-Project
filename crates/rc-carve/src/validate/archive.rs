@@ -67,16 +67,14 @@ pub fn validate_7z(d: &[u8]) -> Outcome {
     if total > d.len() as u64 {
         // The size is established even though the data is not all here: it came
         // from a CRC-checked header, not from how much we happened to read.
-        return out(
-            Outcome::partial(
-                total,
-                format!(
-                    "the start header declares {total} bytes but only {} are available",
-                    d.len()
-                ),
-            )
-            .established(),
-        );
+        return out(Outcome::partial(
+            total,
+            format!(
+                "the start header declares {total} bytes but only {} are available",
+                d.len()
+            ),
+        )
+        .established());
     }
     out(Outcome::valid(total))
 }
@@ -125,16 +123,14 @@ pub fn validate_cab(d: &[u8]) -> Outcome {
             .with("files", files)
     };
     if total > d.len() as u64 {
-        return out(
-            Outcome::partial(
-                total,
-                format!(
-                    "the header declares {total} bytes but only {} are available",
-                    d.len()
-                ),
-            )
-            .established(),
-        );
+        return out(Outcome::partial(
+            total,
+            format!(
+                "the header declares {total} bytes but only {} are available",
+                d.len()
+            ),
+        )
+        .established());
     }
     out(Outcome::valid(total))
 }

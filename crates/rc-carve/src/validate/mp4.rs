@@ -28,8 +28,21 @@ const MAX_FTYP: u64 = 1024;
 fn is_known_top_level(ty: &[u8; 4]) -> bool {
     matches!(
         ty,
-        b"ftyp" | b"moov" | b"mdat" | b"free" | b"skip" | b"wide" | b"pnot" | b"meta"
-            | b"moof" | b"mfra" | b"uuid" | b"styp" | b"sidx" | b"pdin" | b"junk"
+        b"ftyp"
+            | b"moov"
+            | b"mdat"
+            | b"free"
+            | b"skip"
+            | b"wide"
+            | b"pnot"
+            | b"meta"
+            | b"moof"
+            | b"mfra"
+            | b"uuid"
+            | b"styp"
+            | b"sidx"
+            | b"pdin"
+            | b"junk"
     )
 }
 
@@ -124,7 +137,9 @@ pub fn validate(d: &[u8]) -> Outcome {
         }
         boxes += 1;
 
-        let Some(next) = at.checked_add(size) else { break };
+        let Some(next) = at.checked_add(size) else {
+            break;
+        };
         if next > d.len() as u64 {
             // The last box claims more than we have.
             truncated_at = Some(at);
@@ -156,7 +171,11 @@ pub fn validate(d: &[u8]) -> Outcome {
     if truncated_at.is_some() {
         if let Some((body, end)) = moov {
             match check_avc_samples(d, body, end) {
-                AvcCheck::Spliced { track, sample, offset } => {
+                AvcCheck::Spliced {
+                    track,
+                    sample,
+                    offset,
+                } => {
                     return evidence(
                         Outcome::partial(
                             offset,
@@ -169,7 +188,10 @@ pub fn validate(d: &[u8]) -> Outcome {
                         .with("bad_sample", sample),
                     );
                 }
-                AvcCheck::Checked { samples, verified_to } if verified_to > 0 => {
+                AvcCheck::Checked {
+                    samples,
+                    verified_to,
+                } if verified_to > 0 => {
                     return evidence(
                         Outcome::partial(
                             verified_to,
@@ -265,7 +287,11 @@ enum AvcCheck {
     /// every byte before it is right.
     Checked { samples: u64, verified_to: u64 },
     /// This sample did not; `offset` is where it starts.
-    Spliced { track: u64, sample: u64, offset: u64 },
+    Spliced {
+        track: u64,
+        sample: u64,
+        offset: u64,
+    },
 }
 
 /// Most samples to walk. The check is linear in the sample count, and a corrupt
@@ -325,7 +351,9 @@ fn check_avc_samples(d: &[u8], moov_body: usize, moov_end: usize) -> AvcCheck {
             let per = stsc.get(entry).map(|e| e.1).unwrap_or(1);
             let mut pos = chunk;
             for _ in 0..per {
-                let Some(&size) = sizes.get(sample) else { break };
+                let Some(&size) = sizes.get(sample) else {
+                    break;
+                };
                 let Some(end) = pos.checked_add(size as u64) else {
                     return AvcCheck::Spliced {
                         track: track_no,
@@ -421,7 +449,9 @@ fn children(d: &[u8], start: usize, end: usize, want: &[u8; 4]) -> Vec<(usize, u
         if size < hdr as u64 {
             break;
         }
-        let Some(stop) = (i as u64).checked_add(size) else { break };
+        let Some(stop) = (i as u64).checked_add(size) else {
+            break;
+        };
         let stop = stop.min(end as u64) as usize;
         if d.get(i + 4..i + 8) == Some(&want[..]) {
             out.push((i + hdr, stop));
@@ -462,7 +492,12 @@ fn avc_length_size(d: &[u8], stbl_body: usize, stbl_end: usize) -> Option<usize>
     Some((byte & 0x03) as usize + 1)
 }
 
-fn full_box_body(d: &[u8], stbl_body: usize, stbl_end: usize, want: &[u8; 4]) -> Option<(usize, usize)> {
+fn full_box_body(
+    d: &[u8],
+    stbl_body: usize,
+    stbl_end: usize,
+    want: &[u8; 4],
+) -> Option<(usize, usize)> {
     let (body, end) = *children(d, stbl_body, stbl_end, want).first()?;
     // Skip version and flags.
     Some((body + 4, end))
@@ -653,9 +688,15 @@ mod tests {
         }
         let out = validate(&m);
         assert_eq!(out.status, Status::Partial, "{}", out.detail);
-        assert!(!out.length_established, "a splice point is a floor, not an end");
+        assert!(
+            !out.length_established,
+            "a splice point is a floor, not an end"
+        );
         assert_eq!(out.evidence_of("bad_sample"), Some("7"));
-        assert_eq!(out.length, offsets[7], "should stop where the bad sample begins");
+        assert_eq!(
+            out.length, offsets[7],
+            "should stop where the bad sample begins"
+        );
     }
 
     /// A NAL header with its forbidden bit set is not H.264, whatever the

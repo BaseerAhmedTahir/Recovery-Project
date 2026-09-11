@@ -40,8 +40,7 @@ fn load(name: &str) -> Option<(PathBuf, Expected)> {
     if !img.exists() || !json.exists() {
         return None;
     }
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&json).ok()?).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json).ok()?).ok()?;
     let mut deleted = BTreeMap::new();
     for (path, meta) in v["files"].as_object()? {
         if meta["state"].as_str() == Some("deleted") {
@@ -248,9 +247,7 @@ fn quickformat_carve_reports_its_own_denominator() {
          {} emitted with them on - the validators removed {:.1}%",
         raw.stats.header_matches,
         full.candidates.len(),
-        100.0
-            * (1.0
-                - full.candidates.len() as f64 / raw.stats.header_matches.max(1) as f64)
+        100.0 * (1.0 - full.candidates.len() as f64 / raw.stats.header_matches.max(1) as f64)
     );
 
     // --- assertions --------------------------------------------------------

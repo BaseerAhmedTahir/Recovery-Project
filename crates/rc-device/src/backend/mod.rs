@@ -47,7 +47,10 @@ pub fn open_unbuffered(
     sector_size: Option<SectorSize>,
 ) -> Result<Box<dyn ReadOnlyDevice>> {
     if looks_like_image(path) {
-        return Ok(Box::new(file::FileDevice::open_unbuffered(path, sector_size)?));
+        return Ok(Box::new(file::FileDevice::open_unbuffered(
+            path,
+            sector_size,
+        )?));
     }
     // A raw device is unbuffered already; opening it normally is the same thing.
     open(path, sector_size)

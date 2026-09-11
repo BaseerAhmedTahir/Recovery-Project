@@ -424,8 +424,8 @@ mod tests {
 
         let mut body = vec![0u8; 32];
         for (magic, want) in [
-            (0x377f_0682u32, true),  // big-endian checksums; seen on this machine
-            (0x377f_0683, true),     // little-endian checksums; from the spec
+            (0x377f_0682u32, true), // big-endian checksums; seen on this machine
+            (0x377f_0683, true),    // little-endian checksums; from the spec
             (0x377f_0680, false),
             (0x377f_0684, false),
             (0x367f_0682, false),
@@ -472,7 +472,9 @@ mod tests {
         let db = SignatureDb::builtin().unwrap();
         let mut bad = Vec::new();
         for s in &db.signatures {
-            let Some((b, _)) = s.prefilter_byte() else { continue };
+            let Some((b, _)) = s.prefilter_byte() else {
+                continue;
+            };
             let has_alternative = s.header.iter().any(|x| *x != 0x00 && *x != 0xFF);
             if (b == 0x00 || b == 0xFF) && has_alternative {
                 bad.push(format!("{} anchors on {b:#04x}", s.id));

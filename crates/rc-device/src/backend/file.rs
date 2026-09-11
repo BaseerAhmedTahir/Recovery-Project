@@ -151,7 +151,12 @@ impl ReadOnlyDevice for FileDevice {
         let want = validate_read(&self.info, lba, buf)?;
         let offset = lba.byte_offset(self.info.sector_size);
         let result = if self.unbuffered {
-            read_unbuffered(&self.file, &mut buf[..want], offset, self.info.total_bytes())
+            read_unbuffered(
+                &self.file,
+                &mut buf[..want],
+                offset,
+                self.info.total_bytes(),
+            )
         } else {
             read_exact_at_offset(&self.file, &mut buf[..want], offset)
         };
@@ -206,12 +211,7 @@ fn open_uncached(path: &Path) -> std::io::Result<File> {
 /// Unlike the buffered path, a short read is not automatically an error: the
 /// rounded-up window may legitimately extend past the end of the file. It is an
 /// error only if the bytes the caller actually asked for were not all returned.
-fn read_unbuffered(
-    file: &File,
-    buf: &mut [u8],
-    offset: u64,
-    file_len: u64,
-) -> std::io::Result<()> {
+fn read_unbuffered(file: &File, buf: &mut [u8], offset: u64, file_len: u64) -> std::io::Result<()> {
     let a = UNBUFFERED_ALIGN as u64;
     let aligned_in_place = offset % a == 0
         && (buf.len() as u64) % a == 0

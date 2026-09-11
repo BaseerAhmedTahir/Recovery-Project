@@ -250,9 +250,9 @@ impl CandidateIndex {
     }
 
     pub fn count_by_ext(&self) -> Result<Vec<(String, u64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT ext, COUNT(*) FROM candidates GROUP BY ext ORDER BY COUNT(*) DESC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ext, COUNT(*) FROM candidates GROUP BY ext ORDER BY COUNT(*) DESC")?;
         let rows = stmt.query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
         })?;

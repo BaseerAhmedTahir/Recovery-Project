@@ -33,7 +33,9 @@ pub fn validate(d: &[u8]) -> Outcome {
     }
     let kind = le16(d, 2).unwrap_or(0);
     if !matches!(kind, 1 | 2) {
-        return Outcome::reject(format!("image type {kind} is neither icon (1) nor cursor (2)"));
+        return Outcome::reject(format!(
+            "image type {kind} is neither icon (1) nor cursor (2)"
+        ));
     }
     let count = le16(d, 4).unwrap_or(0);
     if count == 0 {

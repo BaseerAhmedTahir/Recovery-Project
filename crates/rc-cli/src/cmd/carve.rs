@@ -155,13 +155,14 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
     // hand the index the image's blocks. Only a raw *device* source makes the
     // destination dangerous, and check_destination already knows the
     // difference.
-    rc_image::check_destination(&index_path, rc_image::UnknownBackingPolicy::Warn)
-        .map_err(|e| {
+    rc_image::check_destination(&index_path, rc_image::UnknownBackingPolicy::Warn).map_err(
+        |e| {
             anyhow::anyhow!(
                 "{e}\n\nPass --index with a path on a different disk from the one \
                  being carved."
             )
-        })?;
+        },
+    )?;
 
     let opts = ScanOptions {
         block_bytes: args.block_bytes,
@@ -287,7 +288,10 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
             s.window_artifact_lengths
         );
     }
-    println!("  candidates emitted        {:>12}", result.candidates.len());
+    println!(
+        "  candidates emitted        {:>12}",
+        result.candidates.len()
+    );
     if s.truncated {
         println!("  WARNING: the candidate limit was reached; results are incomplete.");
     }

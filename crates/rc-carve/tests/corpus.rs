@@ -119,7 +119,10 @@ fn python() -> Option<String> {
 }
 
 fn run_generator(script: &str, dir: &Path) -> serde_json::Value {
-    let path = workspace_root().join("testdata").join("corpus").join(script);
+    let path = workspace_root()
+        .join("testdata")
+        .join("corpus")
+        .join(script);
     assert!(path.exists(), "generator missing at {}", path.display());
 
     let py = python().unwrap_or_else(|| {
@@ -267,7 +270,11 @@ fn check_accepted_with_exact_lengths(c: &Corpus, label: &str) {
             continue;
         };
         let data = read(&c.dir, rel);
-        assert_eq!(data.len() as u64, s.size, "manifest size disagrees for {rel}");
+        assert_eq!(
+            data.len() as u64,
+            s.size,
+            "manifest size disagrees for {rel}"
+        );
 
         let out = validate::validate(id, &data).expect("validator must exist");
         checked += 1;
@@ -313,7 +320,10 @@ fn check_accepted_with_exact_lengths(c: &Corpus, label: &str) {
         }
     }
 
-    eprintln!("\n=== {label} ===\n  {}\n  validated {checked} files: {by_kind:?}", c.provenance);
+    eprintln!(
+        "\n=== {label} ===\n  {}\n  validated {checked} files: {by_kind:?}",
+        c.provenance
+    );
     assert!(checked > 0, "{label}: nothing had a validator");
     assert!(
         wrong_status.is_empty(),
@@ -406,7 +416,12 @@ fn check_trailing_data_ignored(c: &Corpus, label: &str) {
         wrong.is_empty(),
         "{label}: {} file(s) absorbed trailing data:\n{}",
         wrong.len(),
-        wrong.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+        wrong
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -447,7 +462,11 @@ fn ooxml_documents_are_refined_rather_than_reported_as_zip() {
     }
     assert!(seen > 0, "the corpus has no docx files to check");
     eprintln!("{seen} docx files, all refined from the zip container");
-    assert!(wrong.is_empty(), "not refined to docx:\n{}", wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "not refined to docx:\n{}",
+        wrong.join("\n")
+    );
 }
 
 // ---------------------------------------------------------------------------

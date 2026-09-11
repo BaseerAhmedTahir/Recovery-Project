@@ -170,9 +170,29 @@ impl Outcome {
 /// Kept next to the dispatcher so the two cannot drift apart, and asserted
 /// against the shipped signature database in the tests below.
 pub const VALIDATOR_IDS: &[&str] = &[
-    "7z", "bmp", "cab", "elf", "evtx", "gif", "ico", "jpeg", "mp4", "pdf", "pe", "png",
-    "psd", "rar", "reg_hive", "riff_aiff", "riff_avi", "riff_wav", "riff_webp", "rtf",
-    "sqlite", "tiff", "zip",
+    "7z",
+    "bmp",
+    "cab",
+    "elf",
+    "evtx",
+    "gif",
+    "ico",
+    "jpeg",
+    "mp4",
+    "pdf",
+    "pe",
+    "png",
+    "psd",
+    "rar",
+    "reg_hive",
+    "riff_aiff",
+    "riff_avi",
+    "riff_wav",
+    "riff_webp",
+    "rtf",
+    "sqlite",
+    "tiff",
+    "zip",
 ];
 
 /// Run the validator named by `id` over a candidate.
@@ -219,8 +239,7 @@ pub fn has_validator(id: &str) -> bool {
 /// the input is bytes off a damaged disk and a truncated read is the normal
 /// case rather than the exceptional one.
 pub(crate) fn be16(d: &[u8], at: usize) -> Option<u16> {
-    d.get(at..at + 2)
-        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+    d.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]))
 }
 
 pub(crate) fn be32(d: &[u8], at: usize) -> Option<u32> {
@@ -229,14 +248,12 @@ pub(crate) fn be32(d: &[u8], at: usize) -> Option<u32> {
 }
 
 pub(crate) fn be64(d: &[u8], at: usize) -> Option<u64> {
-    d.get(at..at + 8).map(|b| {
-        u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
-    })
+    d.get(at..at + 8)
+        .map(|b| u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
 }
 
 pub(crate) fn le16(d: &[u8], at: usize) -> Option<u16> {
-    d.get(at..at + 2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    d.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
 }
 
 pub(crate) fn le32(d: &[u8], at: usize) -> Option<u32> {
@@ -245,9 +262,8 @@ pub(crate) fn le32(d: &[u8], at: usize) -> Option<u32> {
 }
 
 pub(crate) fn le64(d: &[u8], at: usize) -> Option<u64> {
-    d.get(at..at + 8).map(|b| {
-        u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
-    })
+    d.get(at..at + 8)
+        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
 }
 
 #[cfg(test)]
@@ -287,7 +303,10 @@ mod tests {
             .iter()
             .filter(|id| !used.contains(&**id))
             .collect();
-        assert!(unused.is_empty(), "validators nothing references: {unused:?}");
+        assert!(
+            unused.is_empty(),
+            "validators nothing references: {unused:?}"
+        );
     }
 
     #[test]
@@ -318,12 +337,9 @@ mod tests {
             ("jpeg", {
                 let mut v = vec![0xFF, 0xD8];
                 v.extend_from_slice(&[
-                    0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01,
-                    0x11, 0x00,
+                    0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01, 0x11, 0x00,
                 ]);
-                v.extend_from_slice(&[
-                    0xFF, 0xDA, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x3F, 0x00,
-                ]);
+                v.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x3F, 0x00]);
                 v.extend_from_slice(&[0x11; 32]);
                 v
             }),
@@ -341,11 +357,15 @@ mod tests {
                 v.extend_from_slice(&crate::crc32::crc32_parts(&[b"IDAT", &idat]).to_be_bytes());
                 v
             }),
-            ("pdf", b"%PDF-1.7
+            (
+                "pdf",
+                b"%PDF-1.7
 1 0 obj
 << /Type /Catalog >>
 endobj
-".to_vec()),
+"
+                .to_vec(),
+            ),
             ("zip", {
                 let mut v = b"PK\x03\x04".to_vec();
                 v.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -402,8 +422,14 @@ endobj
                 ));
             }
         }
-        assert!(offenders.is_empty(), "{}", offenders.join("
-"));
+        assert!(
+            offenders.is_empty(),
+            "{}",
+            offenders.join(
+                "
+"
+            )
+        );
     }
 
     /// Every validator must survive arbitrary input without panicking. These
@@ -443,8 +469,7 @@ endobj
         ];
         for id in VALIDATOR_IDS {
             for case in &cases {
-                let out = validate(id, case)
-                    .unwrap_or_else(|| panic!("{id} must be dispatchable"));
+                let out = validate(id, case).unwrap_or_else(|| panic!("{id} must be dispatchable"));
                 // A rejected candidate must not claim a length.
                 if out.status == Status::Rejected {
                     assert_eq!(out.length, 0, "{id} gave a length for a rejection");

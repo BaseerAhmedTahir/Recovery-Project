@@ -276,7 +276,10 @@ mod tests {
     }
 
     fn wav() -> Vec<u8> {
-        let mut body = chunk(b"fmt ", &[1, 0, 2, 0, 0x44, 0xAC, 0, 0, 0x10, 0xB1, 2, 0, 4, 0, 16, 0]);
+        let mut body = chunk(
+            b"fmt ",
+            &[1, 0, 2, 0, 0x44, 0xAC, 0, 0, 0x10, 0xB1, 2, 0, 4, 0, 16, 0],
+        );
         body.extend(chunk(b"data", &[0x00; 128]));
         riff(b"WAVE", body)
     }

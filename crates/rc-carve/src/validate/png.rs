@@ -186,7 +186,10 @@ mod tests {
     fn png(w: u32, h: u32) -> Vec<u8> {
         let mut v = SIGNATURE.to_vec();
         v.extend(ihdr(w, h));
-        v.extend(chunk(b"IDAT", &[0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01]));
+        v.extend(chunk(
+            b"IDAT",
+            &[0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01],
+        ));
         v.extend(chunk(b"IEND", &[]));
         v
     }
