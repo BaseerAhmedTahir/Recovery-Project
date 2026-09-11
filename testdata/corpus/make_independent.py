@@ -40,6 +40,7 @@ Usage
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -143,7 +144,12 @@ def magick_samples(magick):
         return [e] + list(args)
 
     src = ["-size", "96x64", "gradient:red-blue"]
-    photo = ["-size", "128x96", "plasma:fractal"]
+    # plasma is random unless seeded, which made every run grade different
+    # images - so a failure need not reproduce. Seeded since Milestone 4.
+    photo = ["-seed", "1", "-size", "128x96", "plasma:fractal"]
+    # Neither dimension a multiple of 16, so a subsampled image ends in partial
+    # MCUs on both edges - the case MCU-count arithmetic gets wrong.
+    odd = ["-seed", "2", "-size", "131x97", "plasma:fractal"]
     return [
         # --- JPEG ----------------------------------------------------------
         ("independent/im_baseline.jpg", "jpeg", m(*photo, "-quality", "82", "{out}")),
@@ -152,14 +158,67 @@ def magick_samples(magick):
             "jpeg",
             m(*photo, "-interlace", "Plane", "-quality", "75", "{out}"),
         ),
+        # Restart intervals. Until Milestone 4 the corpus had one JPEG named for
+        # them, im_restart.jpg, and its arguments never asked for any: no JPEG
+        # from a foreign encoder had a single restart marker, so the RST cycle
+        # check and the DRI bound had only ever met this project's own encoder.
+        # The variants move what that arithmetic depends on - subsampling (the
+        # blocks in an MCU), progressive scans (each restarts the RST cycle),
+        # optimised Huffman tables, and edges of partial MCUs. PROPERTIES below
+        # checks that each file really has what it is here for.
         (
             "independent/im_restart.jpg",
             "jpeg",
-            m(*photo, "-define", "jpeg:dct-method=float", "-quality", "90", "{out}"),
+            m(*photo, "-define", "jpeg:dct-method=float",
+              "-define", "jpeg:restart-interval=4", "-quality", "90", "{out}"),
+        ),
+        (
+            "independent/im_restart_420.jpg",
+            "jpeg",
+            m(*photo, "-sampling-factor", "2x2,1x1,1x1",
+              "-define", "jpeg:restart-interval=3", "-quality", "85", "{out}"),
+        ),
+        (
+            "independent/im_restart_422.jpg",
+            "jpeg",
+            m(*photo, "-sampling-factor", "2x1,1x1,1x1",
+              "-define", "jpeg:restart-interval=5", "{out}"),
+        ),
+        (
+            "independent/im_restart_444.jpg",
+            "jpeg",
+            m(*photo, "-sampling-factor", "1x1,1x1,1x1",
+              "-define", "jpeg:restart-interval=7", "-quality", "95", "{out}"),
+        ),
+        (
+            "independent/im_restart_grey.jpg",
+            "jpeg",
+            m(*photo, "-colorspace", "Gray", "-define", "jpeg:restart-interval=1", "{out}"),
+        ),
+        (
+            "independent/im_restart_odd.jpg",
+            "jpeg",
+            m(*odd, "-sampling-factor", "2x2,1x1,1x1",
+              "-define", "jpeg:restart-interval=5", "{out}"),
+        ),
+        (
+            "independent/im_restart_progressive.jpg",
+            "jpeg",
+            m(*photo, "-interlace", "Plane", "-define", "jpeg:restart-interval=2", "{out}"),
+        ),
+        (
+            "independent/im_restart_standard_tables.jpg",
+            "jpeg",
+            m(*photo, "-sampling-factor", "2x2,1x1,1x1",
+              "-define", "jpeg:optimize-coding=false",
+              "-define", "jpeg:restart-interval=4", "{out}"),
         ),
         ("independent/im_grey.jpg", "jpeg", m(*photo, "-colorspace", "Gray", "{out}")),
         # --- PNG -----------------------------------------------------------
-        ("independent/im_rgb8.png", "png", m(*src, "-depth", "8", "{out}")),
+        # A 64-row gradient has few enough colours that ImageMagick quietly
+        # writes a palette PNG, which this file was until PROPERTIES checked
+        # (im_palette.png already covers palettes). PNG24: forces true colour.
+        ("independent/im_rgb8.png", "png", m(*src, "-depth", "8", "PNG24:{out}")),
         ("independent/im_rgb16.png", "png", m(*src, "-depth", "16", "{out}")),
         (
             "independent/im_palette.png",
@@ -203,8 +262,12 @@ def magick_samples(magick):
             "gif",
             m(*src, "-interlace", "GIF", "{out}"),
         ),
-        ("independent/im_le.tif", "tiff_le", m(*src, "-endian", "LSB", "{out}")),
-        ("independent/im_be.tif", "tiff_be", m(*src, "-endian", "MSB", "{out}")),
+        # `-endian LSB` is silently ignored by ImageMagick 7's TIFF writer: both
+        # of these were big-endian until PROPERTIES checked, so the
+        # little-endian TIFF validator had never seen a foreign file. The
+        # define is what the TIFF coder reads.
+        ("independent/im_le.tif", "tiff_le", m(*src, "-define", "tiff:endian=lsb", "{out}")),
+        ("independent/im_be.tif", "tiff_be", m(*src, "-define", "tiff:endian=msb", "{out}")),
         ("independent/im_layers.psd", "psd", m(*src, "{out}")),
         # --- ICO: the directory-plus-images format whose signature is
         # three-quarters zeros, so real ones matter for grading the validator --
@@ -222,6 +285,199 @@ def magick_samples(magick):
             m(*src, *src, *src, "{out}"),
         ),
     ]
+
+
+# --------------------------------------------------------------------------
+# what each file is here for, checked
+# --------------------------------------------------------------------------
+#
+# A sample is chosen to exercise one structural variation, and nothing checked
+# that the encoder produced it: im_restart.jpg shipped through Milestone 3
+# without a restart marker, so everything the suite said about restart markers
+# in foreign files was vacuous. Each entry here states the property its file
+# exists for, and a file without it is a generator failure - loud, like a
+# missing tool - rather than a quiet gap in coverage.
+
+# Annex K's luminance DC code-length counts. A JPEG whose first DHT carries
+# these is using the standard tables rather than optimised ones.
+_ANNEX_K_DC_LUMA_BITS = bytes([0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0])
+
+
+def _jpeg_segments(d):
+    """Marker segments up to and including the first SOS: [(marker, payload)]."""
+    out, i = [], 2
+    while i + 4 <= len(d) and d[i] == 0xFF:
+        m = d[i + 1]
+        if m == 0xFF:
+            i += 1
+            continue
+        n = int.from_bytes(d[i + 2:i + 4], "big")
+        out.append((m, d[i + 4:i + 2 + n]))
+        if m == 0xDA:
+            break
+        i += 2 + n
+    return out
+
+
+def _jpeg(d):
+    segs = _jpeg_segments(d)
+    info = {"sof": None, "sampling": [], "restart": 0, "dims": None, "standard_dc": None}
+    for m, pl in segs:
+        if m in (0xC0, 0xC1, 0xC2) and info["sof"] is None:
+            info["sof"] = m
+            info["dims"] = (int.from_bytes(pl[3:5], "big"), int.from_bytes(pl[1:3], "big"))
+            info["sampling"] = [(pl[6 + 3 * c + 1] >> 4, pl[6 + 3 * c + 1] & 15)
+                                for c in range(pl[5])]
+        elif m == 0xDD:
+            info["restart"] = int.from_bytes(pl[:2], "big")
+        elif m == 0xC4 and info["standard_dc"] is None:
+            # The first table in the first DHT; class 0 id 0 is luminance DC.
+            info["standard_dc"] = pl[0] == 0x00 and pl[1:17] == _ANNEX_K_DC_LUMA_BITS
+    return info
+
+
+def _restart(n, sampling=None, sof=0xC0):
+    def check(d):
+        j = _jpeg(d)
+        return (j["restart"] == n and j["sof"] == sof
+                and (sampling is None or j["sampling"] == sampling))
+    return check
+
+
+def _png_ihdr(d):
+    # signature(8) length(4) "IHDR"(4) width(4) height(4) depth colour comp filt interlace
+    return {"depth": d[24], "colour": d[25], "interlace": d[28]}
+
+
+def _bmp_bpp(d):
+    return int.from_bytes(d[28:30], "little")
+
+
+def _riff_fmt(d):
+    i = d.find(b"fmt ")
+    return {"channels": int.from_bytes(d[i + 10:i + 12], "little"),
+            "bits": int.from_bytes(d[i + 22:i + 24], "little")}
+
+
+def _top_boxes(d):
+    out, i = [], 0
+    while i + 8 <= len(d):
+        n = int.from_bytes(d[i:i + 4], "big")
+        t = d[i + 4:i + 8]
+        if n == 1:
+            n = int.from_bytes(d[i + 8:i + 16], "big")
+        if n < 8:
+            break
+        out.append(t)
+        i += n
+    return out
+
+
+def _gif_first_image_interlaced(d):
+    i = 13
+    if d[10] & 0x80:
+        i += 3 * (2 << (d[10] & 7))
+    while i < len(d):
+        if d[i] == 0x2C:
+            return bool(d[i + 9] & 0x40)
+        if d[i] == 0x21:
+            i += 2
+            while d[i]:
+                i += d[i] + 1
+            i += 1
+            continue
+        return None
+    return None
+
+
+def _psd_layers(d):
+    i = 26
+    i += 4 + int.from_bytes(d[i:i + 4], "big")  # colour mode data
+    i += 4 + int.from_bytes(d[i:i + 4], "big")  # image resources
+    # layer and mask info: total length, then layer info length, then count
+    if int.from_bytes(d[i:i + 4], "big") == 0:
+        return 0
+    return abs(int.from_bytes(d[i + 8:i + 10], "big", signed=True))
+
+
+def _pdf_pages(d):
+    # Page objects, not the /Pages tree node.
+    return len(re.findall(rb"/Type\s*/Page(?![a-zA-Z])", d))
+
+
+def _aiff_bits(d):
+    i = d.find(b"COMM")
+    # COMM: size(4) channels(2) frames(4) sample size(2)
+    return int.from_bytes(d[i + 14:i + 16], "big")
+
+
+PROPERTIES = {
+    "independent/im_baseline.jpg": ("baseline (SOF0)", lambda d: _jpeg(d)["sof"] == 0xC0),
+    "independent/im_progressive.jpg": ("progressive (SOF2)", lambda d: _jpeg(d)["sof"] == 0xC2),
+    "independent/im_grey.jpg": ("one component", lambda d: len(_jpeg(d)["sampling"]) == 1),
+    "independent/im_restart.jpg": ("restart interval 4", _restart(4, None)),
+    "independent/im_restart_420.jpg": ("4:2:0, restart interval 3",
+                                       _restart(3, [(2, 2), (1, 1), (1, 1)])),
+    "independent/im_restart_422.jpg": ("4:2:2, restart interval 5",
+                                       _restart(5, [(2, 1), (1, 1), (1, 1)])),
+    "independent/im_restart_444.jpg": ("4:4:4, restart interval 7",
+                                       _restart(7, [(1, 1), (1, 1), (1, 1)])),
+    "independent/im_restart_grey.jpg": ("one component, restart interval 1",
+                                        _restart(1, [(1, 1)])),
+    "independent/im_restart_odd.jpg": (
+        "4:2:0, restart interval 5, partial MCUs on both edges",
+        lambda d: _restart(5, [(2, 2), (1, 1), (1, 1)])(d)
+        and _jpeg(d)["dims"][0] % 16 != 0 and _jpeg(d)["dims"][1] % 16 != 0),
+    "independent/im_restart_progressive.jpg": ("progressive, restart interval 2",
+                                               _restart(2, None, sof=0xC2)),
+    "independent/im_restart_standard_tables.jpg": (
+        "Annex K Huffman tables, 4:2:0, restart interval 4",
+        lambda d: _restart(4, [(2, 2), (1, 1), (1, 1)])(d) and _jpeg(d)["standard_dc"]),
+    "independent/im_rgb8.png": ("8-bit RGB", lambda d: (_png_ihdr(d)["depth"], _png_ihdr(d)["colour"]) == (8, 2)),
+    "independent/im_rgb16.png": ("16-bit samples", lambda d: _png_ihdr(d)["depth"] == 16),
+    "independent/im_palette.png": ("palette colour type", lambda d: _png_ihdr(d)["colour"] == 3),
+    "independent/im_interlaced.png": ("Adam7 interlace", lambda d: _png_ihdr(d)["interlace"] == 1),
+    "independent/im_alpha.png": ("an alpha channel", lambda d: _png_ihdr(d)["colour"] in (4, 6)),
+    "independent/im_24bit.bmp": ("24 bits per pixel", lambda d: _bmp_bpp(d) == 24),
+    "independent/im_8bit.bmp": ("8 bits per pixel", lambda d: _bmp_bpp(d) == 8),
+    "independent/im_32bit.bmp": ("32 bits per pixel", lambda d: _bmp_bpp(d) == 32),
+    "independent/im_lossy.webp": ("a lossy VP8 bitstream", lambda d: b"VP8 " in d[12:64]),
+    "independent/im_lossless.webp": ("a lossless VP8L bitstream", lambda d: b"VP8L" in d[12:64]),
+    "independent/im_gif89.gif": ("GIF89a", lambda d: d[:6] == b"GIF89a"),
+    "independent/im_interlaced.gif": ("an interlaced image", _gif_first_image_interlaced),
+    "independent/im_le.tif": ("little-endian", lambda d: d[:2] == b"II"),
+    "independent/im_be.tif": ("big-endian", lambda d: d[:2] == b"MM"),
+    "independent/im_layers.psd": ("at least one layer", lambda d: _psd_layers(d) >= 1),
+    "independent/im_multisize.ico": ("three images", lambda d: int.from_bytes(d[4:6], "little") == 3),
+    "independent/ff_h264.mp4": ("H.264 with avcC, moov after mdat",
+                                lambda d: b"avcC" in d and _top_boxes(d).index(b"mdat")
+                                < _top_boxes(d).index(b"moov")),
+    "independent/ff_faststart.mp4": ("moov before mdat",
+                                     lambda d: _top_boxes(d).index(b"moov")
+                                     < _top_boxes(d).index(b"mdat")),
+    "independent/ff_mpeg4.mp4": ("MPEG-4 Part 2 video", lambda d: b"mp4v" in d),
+    "independent/ff_av.mp4": ("two tracks", lambda d: d.count(b"trak") >= 2),
+    "independent/im_onepage.pdf": ("one page", lambda d: _pdf_pages(d) == 1),
+    "independent/im_multipage.pdf": ("three pages", lambda d: _pdf_pages(d) == 3),
+    "independent/ff_pcm16.wav": ("16-bit samples", lambda d: _riff_fmt(d)["bits"] == 16),
+    "independent/ff_pcm16.aiff": ("16-bit samples", lambda d: _aiff_bits(d) == 16),
+    "independent/ff_pcm24.wav": ("24-bit samples", lambda d: _riff_fmt(d)["bits"] == 24),
+    "independent/ff_stereo8.wav": ("8-bit stereo",
+                                   lambda d: _riff_fmt(d) == {"channels": 2, "bits": 8}),
+    "independent/ff_mjpeg.avi": ("MJPEG video", lambda d: b"MJPG" in d),
+}
+
+
+def check_property(rel, data):
+    """None if the file has what it is here for, else a reason it does not."""
+    if rel not in PROPERTIES:
+        return None
+    what, test = PROPERTIES[rel]
+    try:
+        ok = test(data)
+    except (IndexError, ValueError):
+        ok = False
+    return None if ok else "expected %s; the encoder did not produce it" % what
 
 
 def ffmpeg_samples(ffmpeg):
@@ -483,6 +739,10 @@ def probe():
 
 def build(outdir):
     tools = probe()
+    planned = {p for p, _, _ in magick_samples({"exe": "magick"})} | {
+        p for p, _, _ in ffmpeg_samples({"exe": "ffmpeg"})}
+    unknown = sorted(set(PROPERTIES) - planned)
+    assert not unknown, "PROPERTIES names files nothing generates: %s" % unknown
     magick, ffmpeg = tools["imagemagick"], tools["ffmpeg"]
 
     plan = []
@@ -555,6 +815,13 @@ def build(outdir):
             continue
         with open(dest, "rb") as fh:
             data = fh.read()
+        missing_property = check_property(rel, data)
+        if missing_property:
+            failures.append(
+                {"path": rel, "kind": kind, "tool": tool, "exit": 0,
+                 "stderr": missing_property}
+            )
+            continue
         manifest[rel] = {
             "sha256": hashlib.sha256(data).hexdigest(),
             "size": len(data),
