@@ -381,6 +381,46 @@ hand-built PE vectors have no overlay because I would not have thought to add
 one. Bounding it needs content heuristics and belongs with `rc-bifrag` in
 Milestone 4.
 
+### 3.6b A fragmented file can still validate, for two formats in two cases
+
+Until Milestone 4, the carver reported fragmented files as complete. Carving
+the fragmented fixture contiguously recovered none of its four files - which
+is expected - but three of them came back `Valid` with an established length:
+two JPEGs at 150,316 and 131,085 bytes that are really 84,780 and 65,549, and
+an MP4 at exactly the right length with the wrong bytes. A user would have been
+handed corrupt files marked GREEN.
+
+The JPEGs validated because the gaps between their fragments were filled with
+a constant byte containing no `0xFF`, so no marker ever appeared to end the
+entropy-coded data. The MP4 validated because all three of its top-level box
+headers sat in the first 4 KiB fragment, and the validator summed their
+declared sizes without reading the media.
+
+Both are now caught, by checks that come from the formats rather than from the
+fixture:
+
+* **JPEG with a restart interval.** DRI declares how many MCUs lie between
+  restart markers, which caps how many bytes can: an 8x8 block cannot exceed
+  512 bytes of entropy-coded data even with worst-case stuffing. Real files
+  run 42-116 bytes between markers against a ceiling of 2048; a 32 KiB gap is
+  far outside it.
+* **H.264 MP4 with an `avcC` configuration.** Each sample must divide exactly
+  into length-prefixed NAL units. ffmpeg's output tiles with no failures; data
+  from elsewhere almost never does.
+
+The two cases that remain:
+
+1. **A JPEG without a restart interval.** Most real photos have none. With no
+   interval there is no bound, and a gap of constant fill still passes. A gap
+   of real data from another file is still caught - random bytes contain
+   `0xFF` about every 256 bytes and almost never follow it with a legal marker
+   - but only actual Huffman decoding closes the constant-fill case.
+2. **An MP4 that is not H.264, or that claims `avc1` without `avcC`.** There is
+   no sample structure to check. This project's own corpus generator writes
+   exactly that: its MP4s declare `avc1` and carry random samples with no
+   `avcC`, which a real decoder would reject. That is a shortcut in the
+   generator, not a property of real video.
+
 ### 3.7 Twenty-eight of the 44 signatures have a validator; 16 do not
 
 Counted, not estimated: 28 entries name a validator, drawn from 23 distinct

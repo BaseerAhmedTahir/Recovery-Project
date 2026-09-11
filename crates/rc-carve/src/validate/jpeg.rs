@@ -27,6 +27,23 @@ const SOS: u8 = 0xDA;
 const RST_FIRST: u8 = 0xD0;
 const RST_LAST: u8 = 0xD7;
 
+/// Define Restart Interval: declares how many MCUs lie between restart markers.
+const DRI: u8 = 0xDD;
+
+/// The most entropy-coded bytes one 8x8 block can occupy.
+///
+/// Derived from the format, not measured from a corpus. A baseline block holds
+/// 64 coefficients; each is at most a 16-bit Huffman code plus an 11-bit
+/// magnitude, about 216 bytes for the block, and byte stuffing (every 0xFF
+/// written as FF 00) can at worst double that to 432. 512 leaves margin and
+/// also covers 12-bit precision. Progressive scans carry a subset of each
+/// block's coefficients, so they fall inside it too.
+///
+/// Real corpus JPEGs run 42 to 116 bytes between restart markers at an interval
+/// of four one-block MCUs, far inside the 2048 this allows - so the bound cannot
+/// fire on a legitimate file, and anything that exceeds it is not JPEG data.
+const MAX_BYTES_PER_BLOCK: u64 = 512;
+
 /// Start-of-frame markers. `C4` is DHT, `C8` is reserved and `CC` is DAC, so
 /// they are holes in the range rather than frame headers.
 fn is_sof(m: u8) -> bool {
@@ -48,6 +65,10 @@ pub fn validate(d: &[u8]) -> Outcome {
     let mut components = 0u8;
     let mut restarts = 0u64;
     let mut restarts_out_of_order = 0u64;
+    // From DRI, in MCUs; zero means the file declares no restart markers.
+    let mut restart_interval = 0u64;
+    // Sum of each component's sampling factors, from the frame header.
+    let mut blocks_per_mcu = 1u64;
     let mut segments = 0u64;
     // The furthest point the structure justifies: the end of the last segment
     // walked, or the last restart marker inside the scan. Reporting `d.len()`
@@ -150,13 +171,29 @@ pub fn validate(d: &[u8]) -> Outcome {
         segments += 1;
         verified_to = seg_end;
 
+        if marker == DRI {
+            restart_interval = be16(d, i + 2).unwrap_or(0) as u64;
+        }
+
         if is_sof(marker) {
             saw_sof = true;
-            // SOF payload: precision(1) height(2) width(2) components(1).
+            // SOF payload: precision(1) height(2) width(2) components(1), then
+            // three bytes per component: id, sampling factors, quant table.
             if seg_len >= 8 {
                 let h = be16(d, i + 3).unwrap_or(0);
                 let w = be16(d, i + 5).unwrap_or(0);
                 components = d.get(i + 7).copied().unwrap_or(0);
+                // A single-component scan codes one block per MCU whatever the
+                // declared sampling; an interleaved one codes h*v per component.
+                blocks_per_mcu = if components == 1 {
+                    1
+                } else {
+                    (0..components as usize)
+                        .filter_map(|c| d.get(i + 9 + 3 * c))
+                        .map(|s| ((s >> 4) as u64) * ((s & 0x0F) as u64))
+                        .sum::<u64>()
+                        .max(1)
+                };
                 if w == 0 || h == 0 {
                     return Outcome::reject("frame header declares a zero dimension");
                 }
@@ -179,7 +216,37 @@ pub fn validate(d: &[u8]) -> Outcome {
             // nor a restart.
             let mut k = i;
             let mut expect = 0u8;
+            // The most bytes one restart interval can legitimately occupy.
+            // Without DRI there is no interval and no bound.
+            let max_interval = (restart_interval > 0)
+                .then(|| restart_interval * blocks_per_mcu * MAX_BYTES_PER_BLOCK);
+            let mut interval_start = k;
             loop {
+                if let Some(limit) = max_interval {
+                    let run = (k - interval_start) as u64;
+                    if run > limit {
+                        // Far more data between two restart markers than the
+                        // declared interval can hold. This is not entropy-coded
+                        // image data: the stream has been spliced into something
+                        // else - the edge of a fragment, or an overwrite.
+                        //
+                        // Before this check the validator walked straight on,
+                        // and a JPEG split into three pieces around two 32 KiB
+                        // gaps came back Valid at 150,316 bytes for an 84,780-
+                        // byte file. The length reported is the last restart
+                        // marker, the last point the structure vouches for,
+                        // which is also exactly where a reassembler has to look
+                        // for the next fragment.
+                        return spliced(
+                            verified_to,
+                            run,
+                            limit,
+                            restart_interval,
+                            restarts,
+                            dims,
+                        );
+                    }
+                }
                 if k + 1 >= d.len() {
                     return truncated(
                         verified_to,
@@ -207,6 +274,7 @@ pub fn validate(d: &[u8]) -> Outcome {
                         // A restart marker is a real structural landmark, so
                         // everything up to it is justified.
                         verified_to = k;
+                        interval_start = k;
                     }
                     _ => break,
                 }
@@ -214,6 +282,36 @@ pub fn validate(d: &[u8]) -> Outcome {
             i = k;
         }
     }
+}
+
+/// The entropy data stopped being entropy data partway through.
+///
+/// Partial with an *unestablished* length: the file does continue, just not
+/// here, so the length is a floor and must not be allowed to suppress other
+/// candidates. The evidence carries the last good offset explicitly so a
+/// reassembler does not have to parse the detail string.
+fn spliced(
+    last_good: usize,
+    run: u64,
+    limit: u64,
+    interval: u64,
+    restarts: u64,
+    dims: Option<(u16, u16)>,
+) -> Outcome {
+    let (w, h) = dims.unwrap_or((0, 0));
+    Outcome::partial(
+        last_good as u64,
+        format!(
+            "{run} bytes of entropy data without a restart marker, where a {interval}-MCU \
+             interval allows at most {limit}; the stream is spliced into other data - a \
+             fragment boundary or an overwrite - after the last good restart marker"
+        ),
+    )
+    .with("width", w)
+    .with("height", h)
+    .with("restart_markers", restarts)
+    .with("restart_interval", interval)
+    .with("spliced_after", last_good)
 }
 
 /// Out of data, but we know what it is.
@@ -271,6 +369,86 @@ mod tests {
         v.extend_from_slice(entropy);
         v.extend_from_slice(&[0xFF, 0xD9]);
         v
+    }
+
+    /// A JPEG that declares a restart interval, with `intervals` restart
+    /// markers each preceded by `per` bytes of entropy data. Built field by
+    /// field so every segment length is right.
+    fn with_dri(intervals: usize, per: usize) -> Vec<u8> {
+        let mut v = vec![0xFF, 0xD8];
+        // DRI: length 4, interval 4 MCUs.
+        v.extend_from_slice(&[0xFF, 0xDD, 0x00, 0x04, 0x00, 0x04]);
+        // SOF0: length 11 = 2 + precision + height + width + ncomp + 3.
+        v.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x0B, 0x08]);
+        v.extend_from_slice(&64u16.to_be_bytes()); // height
+        v.extend_from_slice(&64u16.to_be_bytes()); // width
+        v.extend_from_slice(&[0x01, 0x01, 0x11, 0x00]); // 1 component, 1x1
+        // SOS: length 8 = 2 + ncomp + 2 + 3.
+        v.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00]);
+        for n in 0..intervals {
+            // Entropy bytes that never contain 0xFF, so no stuffing is needed.
+            v.extend((0..per).map(|i| (0x11 + (i * 7 + n) % 0xEE) as u8));
+            v.extend_from_slice(&[0xFF, 0xD0 + (n % 8) as u8]);
+        }
+        v.extend_from_slice(&[0x22, 0x33, 0xFF, 0xD9]);
+        v
+    }
+
+    /// The bound must not fire on a legitimate file, or it would turn every
+    /// photo with a restart interval into a false "spliced".
+    #[test]
+    fn a_normal_restart_interval_is_still_valid() {
+        let j = with_dri(40, 64);
+        let out = validate(&j);
+        assert_eq!(out.status, Status::Valid, "{}", out.detail);
+        assert_eq!(out.length, j.len() as u64);
+        assert_eq!(out.evidence_of("restart_markers"), Some("40"));
+    }
+
+    /// The case the fragmented fixture exposed: a JPEG split around a 32 KiB
+    /// gap of constant fill came back Valid, because the fill has no 0xFF in it
+    /// and so never looks like a marker.
+    #[test]
+    fn a_long_gap_between_restart_markers_is_reported_as_a_splice() {
+        let good = with_dri(10, 64);
+        // Cut after the tenth restart marker, before the tail and EOI.
+        let cut = good.len() - 4;
+        let mut j = good[..cut].to_vec();
+        let last_good = j.len();
+        j.extend_from_slice(&vec![0xA5u8; 32 * 1024]);
+        // The file continues on the far side of the gap, then ends normally.
+        j.extend((0..64).map(|i| (0x11 + i * 3) as u8));
+        j.extend_from_slice(&[0xFF, 0xD2, 0x44, 0xFF, 0xD9]);
+
+        let out = validate(&j);
+        assert_eq!(out.status, Status::Partial, "{}", out.detail);
+        assert!(!out.length_established, "a splice point is a floor, not an end");
+        assert_eq!(
+            out.length, last_good as u64,
+            "should stop at the last restart marker before the gap"
+        );
+        assert_eq!(
+            out.evidence_of("spliced_after"),
+            Some(last_good.to_string().as_str())
+        );
+        assert!(out.detail.contains("spliced"), "{}", out.detail);
+    }
+
+    /// Without DRI there is no interval to bound, so the check must not
+    /// invent one. Constant fill still gets through in that case - a known gap,
+    /// recorded in LIMITATIONS, that only real Huffman decoding closes.
+    #[test]
+    fn without_a_restart_interval_there_is_no_bound() {
+        let mut j = minimal(&[0x11; 64]);
+        let eoi = j.len() - 2;
+        j.splice(eoi..eoi, vec![0xA5u8; 32 * 1024]);
+        let out = validate(&j);
+        assert_eq!(
+            out.status,
+            Status::Valid,
+            "no DRI means nothing to measure the gap against: {}",
+            out.detail
+        );
     }
 
     #[test]

@@ -59,6 +59,8 @@ pub fn validate(d: &[u8]) -> Outcome {
     let mut at = 0u64;
     let mut saw_moov = false;
     let mut saw_mdat = false;
+    // Body start and end of the moov box, for the sample-level check below.
+    let mut moov: Option<(usize, usize)> = None;
     let mut boxes = 0u64;
     let mut unknown = 0u64;
     let mut truncated_at: Option<u64> = None;
@@ -106,7 +108,14 @@ pub fn validate(d: &[u8]) -> Outcome {
         }
 
         match &ty {
-            b"moov" => saw_moov = true,
+            b"moov" => {
+                saw_moov = true;
+                let body = i + header as usize;
+                let end = (at + size).min(d.len() as u64) as usize;
+                if body <= end {
+                    moov = Some((body, end));
+                }
+            }
             b"mdat" => saw_mdat = true,
             _ => {}
         }
@@ -157,7 +166,311 @@ pub fn validate(d: &[u8]) -> Outcome {
         ));
     }
 
+    // A box tree whose headers add up is not yet a file whose media is intact.
+    //
+    // The fragmented fixture's MP4 has all three top-level box headers inside
+    // its first 4 KiB fragment, so the walk above read ftyp, moov and the mdat
+    // header, summed their declared sizes to exactly the right 492,610 bytes,
+    // and declared the file Valid without reading one byte of the media spread
+    // across the other fifteen fragments. For H.264, the media itself can be
+    // checked: see check_avc_samples.
+    if let Some((body, end)) = moov {
+        match check_avc_samples(d, body, end) {
+            AvcCheck::Spliced {
+                track,
+                sample,
+                offset,
+            } => {
+                return evidence(
+                    Outcome::partial(
+                        offset,
+                        format!(
+                            "the box tree adds up, but sample {sample} of H.264 track {track} \
+                             does not divide into NAL units; the media data is spliced into \
+                             something else - a fragment boundary or an overwrite - at that \
+                             sample"
+                        ),
+                    )
+                    .with("spliced_after", offset)
+                    .with("bad_sample", sample),
+                );
+            }
+            AvcCheck::Checked { samples } => {
+                return evidence(Outcome::valid(at).with("avc_samples_checked", samples));
+            }
+            AvcCheck::NotApplicable => {}
+        }
+    }
+
     evidence(Outcome::valid(at))
+}
+
+// ---------------------------------------------------------------------------
+// H.264 sample check
+// ---------------------------------------------------------------------------
+
+enum AvcCheck {
+    /// No track is H.264 with an avcC configuration, so there is nothing a
+    /// sample can be checked against.
+    NotApplicable,
+    /// Every H.264 sample within reach divided cleanly into NAL units.
+    Checked { samples: u64 },
+    /// This sample did not; `offset` is where it starts.
+    Spliced { track: u64, sample: u64, offset: u64 },
+}
+
+/// Most samples to walk. The check is linear in the sample count, and a corrupt
+/// count must not turn validation into an unbounded loop.
+const MAX_SAMPLES: u64 = 2_000_000;
+
+/// Check that every H.264 sample divides exactly into length-prefixed NAL units.
+///
+/// An H.264 sample in an MP4 is a run of NAL units, each preceded by its length
+/// in a field whose width the track's `avcC` box declares. The lengths must tile
+/// the sample exactly, and every NAL header's top bit - `forbidden_zero_bit` -
+/// must be clear. Real encoder output always satisfies this; ffmpeg's H.264
+/// files tile with no failures. Data from anywhere else almost never does: a
+/// random length field falls inside a sample of a few kilobytes with odds of
+/// about one in a million.
+///
+/// Applied only to `avc1`/`avc3` tracks that carry `avcC`, which is not a
+/// convenience but a requirement: `avcC` is where the length-field width is
+/// declared, so without it the samples cannot be parsed at all. That also keeps
+/// the check off audio tracks, whose AAC samples are not NAL units, and off
+/// files that claim `avc1` without the configuration a real encoder writes -
+/// which is what this project's own corpus generator produces.
+fn check_avc_samples(d: &[u8], moov_body: usize, moov_end: usize) -> AvcCheck {
+    let mut any = false;
+    let mut samples_checked = 0u64;
+
+    for (idx, (trak_body, trak_end)) in children(d, moov_body, moov_end, b"trak")
+        .into_iter()
+        .enumerate()
+    {
+        let track_no = idx as u64 + 1;
+        let Some(stbl) = descend(d, trak_body, trak_end, &[b"mdia", b"minf", b"stbl"]) else {
+            continue;
+        };
+        let (stbl_body, stbl_end) = stbl;
+        let Some(length_size) = avc_length_size(d, stbl_body, stbl_end) else {
+            continue;
+        };
+        let (Some(sizes), Some(chunks), Some(stsc)) = (
+            sample_sizes(d, stbl_body, stbl_end),
+            chunk_offsets(d, stbl_body, stbl_end),
+            samples_per_chunk(d, stbl_body, stbl_end),
+        ) else {
+            continue;
+        };
+        any = true;
+
+        let mut sample = 0usize;
+        let mut entry = 0usize;
+        for (k, &chunk) in chunks.iter().enumerate() {
+            // stsc lists runs: each entry applies from its first chunk until
+            // the next entry's first chunk. Chunks are numbered from one.
+            while entry + 1 < stsc.len() && (stsc[entry + 1].0 as usize) <= k + 1 {
+                entry += 1;
+            }
+            let per = stsc.get(entry).map(|e| e.1).unwrap_or(1);
+            let mut pos = chunk;
+            for _ in 0..per {
+                let Some(&size) = sizes.get(sample) else { break };
+                let Some(end) = pos.checked_add(size as u64) else {
+                    return AvcCheck::Spliced {
+                        track: track_no,
+                        sample: sample as u64,
+                        offset: pos,
+                    };
+                };
+                // Past the end of what we were given is truncation, which the
+                // box walk has already reported, not evidence of a splice.
+                if end > d.len() as u64 {
+                    return if any {
+                        AvcCheck::Checked {
+                            samples: samples_checked,
+                        }
+                    } else {
+                        AvcCheck::NotApplicable
+                    };
+                }
+                if !tiles(&d[pos as usize..end as usize], length_size) {
+                    return AvcCheck::Spliced {
+                        track: track_no,
+                        sample: sample as u64,
+                        offset: pos,
+                    };
+                }
+                samples_checked += 1;
+                if samples_checked >= MAX_SAMPLES {
+                    return AvcCheck::Checked {
+                        samples: samples_checked,
+                    };
+                }
+                pos = end;
+                sample += 1;
+            }
+        }
+    }
+    if any {
+        AvcCheck::Checked {
+            samples: samples_checked,
+        }
+    } else {
+        AvcCheck::NotApplicable
+    }
+}
+
+/// Does `sample` divide exactly into length-prefixed NAL units?
+fn tiles(sample: &[u8], length_size: usize) -> bool {
+    let mut p = 0usize;
+    while p < sample.len() {
+        let Some(field) = sample.get(p..p + length_size) else {
+            return false;
+        };
+        let len = field.iter().fold(0usize, |acc, b| (acc << 8) | *b as usize);
+        if len == 0 {
+            return false;
+        }
+        let Some(nal) = sample.get(p + length_size) else {
+            return false;
+        };
+        // forbidden_zero_bit: set in no conforming NAL unit.
+        if nal & 0x80 != 0 {
+            return false;
+        }
+        let Some(next) = p.checked_add(length_size + len) else {
+            return false;
+        };
+        if next > sample.len() {
+            return false;
+        }
+        p = next;
+    }
+    true
+}
+
+/// Child boxes of a given type within [start, end).
+fn children(d: &[u8], start: usize, end: usize, want: &[u8; 4]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = start;
+    while i + 8 <= end {
+        let size32 = be32(d, i).unwrap_or(0) as u64;
+        let (size, hdr) = match size32 {
+            1 => match be64(d, i + 8) {
+                Some(s) => (s, 16usize),
+                None => break,
+            },
+            0 => ((end - i) as u64, 8usize),
+            s => (s, 8usize),
+        };
+        if size < hdr as u64 {
+            break;
+        }
+        let Some(stop) = (i as u64).checked_add(size) else { break };
+        let stop = stop.min(end as u64) as usize;
+        if d.get(i + 4..i + 8) == Some(&want[..]) {
+            out.push((i + hdr, stop));
+        }
+        if stop <= i {
+            break;
+        }
+        i = stop;
+    }
+    out
+}
+
+/// Follow a path of box types down from [start, end).
+fn descend(d: &[u8], start: usize, end: usize, path: &[&[u8; 4]]) -> Option<(usize, usize)> {
+    let mut range = (start, end);
+    for want in path {
+        range = *children(d, range.0, range.1, want).first()?;
+    }
+    Some(range)
+}
+
+/// The NAL length-field width from the track's avcC, if the track is H.264.
+fn avc_length_size(d: &[u8], stbl_body: usize, stbl_end: usize) -> Option<usize> {
+    let (stsd_body, stsd_end) = *children(d, stbl_body, stbl_end, b"stsd").first()?;
+    // stsd is a full box: version and flags, then an entry count.
+    let entry = stsd_body + 8;
+    let entry_type = d.get(entry + 4..entry + 8)?;
+    if entry_type != b"avc1" && entry_type != b"avc3" {
+        return None;
+    }
+    let entry_size = be32(d, entry)? as usize;
+    let entry_end = (entry + entry_size).min(stsd_end);
+    let window = d.get(entry..entry_end)?;
+    let at = memchr::memmem::find(window, b"avcC")?;
+    // 'avcC' tag, then the body: version, profile, compatibility, level, and
+    // then the byte whose low two bits are lengthSizeMinusOne.
+    let byte = *window.get(at + 8)?;
+    Some((byte & 0x03) as usize + 1)
+}
+
+fn full_box_body(d: &[u8], stbl_body: usize, stbl_end: usize, want: &[u8; 4]) -> Option<(usize, usize)> {
+    let (body, end) = *children(d, stbl_body, stbl_end, want).first()?;
+    // Skip version and flags.
+    Some((body + 4, end))
+}
+
+fn sample_sizes(d: &[u8], stbl_body: usize, stbl_end: usize) -> Option<Vec<u32>> {
+    let (b, end) = full_box_body(d, stbl_body, stbl_end, b"stsz")?;
+    let fixed = be32(d, b)?;
+    let count = (be32(d, b + 4)? as u64).min(MAX_SAMPLES) as usize;
+    if fixed != 0 {
+        return Some(vec![fixed; count]);
+    }
+    let mut v = Vec::with_capacity(count);
+    for k in 0..count {
+        let at = b + 8 + 4 * k;
+        if at + 4 > end {
+            break;
+        }
+        v.push(be32(d, at)?);
+    }
+    Some(v)
+}
+
+fn chunk_offsets(d: &[u8], stbl_body: usize, stbl_end: usize) -> Option<Vec<u64>> {
+    if let Some((b, end)) = full_box_body(d, stbl_body, stbl_end, b"stco") {
+        let n = (be32(d, b)? as u64).min(MAX_SAMPLES) as usize;
+        return Some(
+            (0..n)
+                .map(|k| b + 4 + 4 * k)
+                .take_while(|at| at + 4 <= end)
+                .filter_map(|at| be32(d, at).map(|v| v as u64))
+                .collect(),
+        );
+    }
+    let (b, end) = full_box_body(d, stbl_body, stbl_end, b"co64")?;
+    let n = (be32(d, b)? as u64).min(MAX_SAMPLES) as usize;
+    Some(
+        (0..n)
+            .map(|k| b + 4 + 8 * k)
+            .take_while(|at| at + 8 <= end)
+            .filter_map(|at| be64(d, at))
+            .collect(),
+    )
+}
+
+/// stsc entries as (first_chunk, samples_per_chunk).
+fn samples_per_chunk(d: &[u8], stbl_body: usize, stbl_end: usize) -> Option<Vec<(u32, u32)>> {
+    let (b, end) = full_box_body(d, stbl_body, stbl_end, b"stsc")?;
+    let n = (be32(d, b)? as u64).min(MAX_SAMPLES) as usize;
+    let mut v = Vec::with_capacity(n);
+    for k in 0..n {
+        let at = b + 4 + 12 * k;
+        if at + 12 > end {
+            break;
+        }
+        v.push((be32(d, at)?, be32(d, at + 4)?));
+    }
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +494,136 @@ mod tests {
         v.extend(boxed(b"moov", &[0x11; 64]));
         v.extend(boxed(b"mdat", &[0x22; 256]));
         v
+    }
+
+    /// A minimal but correctly structured H.264 MP4: ftyp, mdat, moov, with an
+    /// avc1 sample entry carrying avcC and samples that tile as 4-byte
+    /// length-prefixed NAL units. mdat precedes moov so the chunk offsets are
+    /// known before the index is written.
+    fn avc_mp4(samples: usize, nals_per_sample: usize, nal_len: usize) -> (Vec<u8>, Vec<u64>) {
+        fn b(ty: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(ty);
+            v.extend_from_slice(body);
+            v
+        }
+        fn full(ty: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut v = vec![0u8; 4];
+            v.extend_from_slice(body);
+            b(ty, &v)
+        }
+
+        let ftyp = b(b"ftyp", b"isom\x00\x00\x02\x00isomavc1");
+        let mdat_data_at = (ftyp.len() + 8) as u64;
+
+        let mut data = Vec::new();
+        let mut offsets = Vec::new();
+        let mut sizes = Vec::new();
+        for s in 0..samples {
+            offsets.push(mdat_data_at + data.len() as u64);
+            let start = data.len();
+            for n in 0..nals_per_sample {
+                data.extend_from_slice(&(nal_len as u32).to_be_bytes());
+                data.push(0x65); // nal_ref_idc 3, type 5: forbidden bit clear
+                data.extend((1..nal_len).map(|i| ((i * 13 + s + n) % 251) as u8));
+            }
+            sizes.push((data.len() - start) as u32);
+        }
+        let mdat = b(b"mdat", &data);
+
+        let mut avcc = vec![1u8, 0x42, 0x00, 0x1E, 0xFF, 0xE0, 0x00];
+        avcc.truncate(7);
+        let mut entry = vec![0u8; 6];
+        entry.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+        entry.extend_from_slice(&[0u8; 70]); // visual sample entry fields
+        entry.extend(b(b"avcC", &avcc));
+        let mut stsd_body = 1u32.to_be_bytes().to_vec();
+        stsd_body.extend(b(b"avc1", &entry));
+        let stsd = full(b"stsd", &stsd_body);
+
+        let mut stsz_body = 0u32.to_be_bytes().to_vec();
+        stsz_body.extend_from_slice(&(samples as u32).to_be_bytes());
+        for sz in &sizes {
+            stsz_body.extend_from_slice(&sz.to_be_bytes());
+        }
+        let stsz = full(b"stsz", &stsz_body);
+
+        let mut stsc_body = 1u32.to_be_bytes().to_vec();
+        stsc_body.extend_from_slice(&1u32.to_be_bytes());
+        stsc_body.extend_from_slice(&1u32.to_be_bytes());
+        stsc_body.extend_from_slice(&1u32.to_be_bytes());
+        let stsc = full(b"stsc", &stsc_body);
+
+        let mut stco_body = (samples as u32).to_be_bytes().to_vec();
+        for o in &offsets {
+            stco_body.extend_from_slice(&(*o as u32).to_be_bytes());
+        }
+        let stco = full(b"stco", &stco_body);
+
+        let mut stbl = stsd;
+        stbl.extend(stsz);
+        stbl.extend(stsc);
+        stbl.extend(stco);
+        let moov = b(
+            b"moov",
+            &b(b"trak", &b(b"mdia", &b(b"minf", &b(b"stbl", &stbl)))),
+        );
+
+        let mut v = ftyp;
+        v.extend(mdat);
+        v.extend(moov);
+        (v, offsets)
+    }
+
+    /// Real H.264 media divides into NAL units, and the validator checks it.
+    #[test]
+    fn well_formed_h264_samples_are_checked_and_accepted() {
+        let (m, _) = avc_mp4(12, 3, 200);
+        let out = validate(&m);
+        assert_eq!(out.status, Status::Valid, "{}", out.detail);
+        assert_eq!(out.length, m.len() as u64);
+        assert_eq!(out.evidence_of("avc_samples_checked"), Some("12"));
+    }
+
+    /// The case the fragmented fixture exposed. The box headers all sit in the
+    /// first fragment and add up to the right length, so without looking at
+    /// the samples the file validated as complete. A sample that does not
+    /// divide into NAL units is where the media stops being this file.
+    #[test]
+    fn a_sample_that_does_not_tile_is_reported_as_a_splice() {
+        let (mut m, offsets) = avc_mp4(12, 3, 200);
+        // Overwrite sample 7 with bytes from somewhere else entirely.
+        let at = offsets[7] as usize;
+        for (i, byte) in m[at..at + 600].iter_mut().enumerate() {
+            *byte = (i as u8).wrapping_mul(97).wrapping_add(0xA3);
+        }
+        let out = validate(&m);
+        assert_eq!(out.status, Status::Partial, "{}", out.detail);
+        assert!(!out.length_established, "a splice point is a floor, not an end");
+        assert_eq!(out.evidence_of("bad_sample"), Some("7"));
+        assert_eq!(out.length, offsets[7], "should stop where the bad sample begins");
+    }
+
+    /// A NAL header with its forbidden bit set is not H.264, whatever the
+    /// length fields say.
+    #[test]
+    fn a_set_forbidden_bit_fails_the_sample() {
+        let (mut m, offsets) = avc_mp4(4, 2, 100);
+        m[offsets[2] as usize + 4] |= 0x80;
+        let out = validate(&m);
+        assert_eq!(out.status, Status::Partial, "{}", out.detail);
+        assert_eq!(out.evidence_of("bad_sample"), Some("2"));
+    }
+
+    /// No avcC, no check - there is no length-field width to parse with. This
+    /// is what keeps the corpus generator's avc1-without-avcC files, and every
+    /// non-H.264 track, exactly as they were.
+    #[test]
+    fn without_avcc_the_samples_are_not_checked() {
+        let m = mp4();
+        let out = validate(&m);
+        assert_eq!(out.status, Status::Valid, "{}", out.detail);
+        assert_eq!(out.evidence_of("avc_samples_checked"), None);
     }
 
     #[test]
