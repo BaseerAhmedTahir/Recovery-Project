@@ -40,7 +40,7 @@ const MAX_SECTIONS: u16 = 96;
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < LFANEW_AT + 4 {
-        return Outcome::reject("shorter than a DOS header");
+        return Outcome::reject("shorter than a DOS header").truncated();
     }
     if &d[..2] != b"MZ" {
         return Outcome::reject("does not begin with MZ");
@@ -59,7 +59,7 @@ pub fn validate(d: &[u8]) -> Outcome {
             lfanew as u64,
             "the DOS header points past the available data; truncated before the PE header",
         )
-        .with("truncated", true);
+        .truncated();
     }
     if &d[lfanew..lfanew + 4] != PE_MAGIC {
         return Outcome::reject("e_lfanew does not point at a PE signature");
@@ -67,8 +67,7 @@ pub fn validate(d: &[u8]) -> Outcome {
 
     let coff = lfanew + 4;
     if d.len() < coff + COFF {
-        return Outcome::partial(coff as u64, "truncated inside the COFF header")
-            .with("truncated", true);
+        return Outcome::partial(coff as u64, "truncated inside the COFF header").truncated();
     }
     let machine = le16(d, coff).unwrap_or(0);
     let sections = le16(d, coff + 2).unwrap_or(0);
@@ -90,7 +89,7 @@ pub fn validate(d: &[u8]) -> Outcome {
             table.min(d.len()) as u64,
             "the section table extends past the available data; truncated",
         )
-        .with("truncated", true);
+        .truncated();
     }
 
     // The certificate table, when present, sits past every section.
@@ -152,7 +151,7 @@ pub fn validate(d: &[u8]) -> Outcome {
                     d.len()
                 ),
             )
-            .with("truncated", true),
+            .truncated(),
         );
     }
 

@@ -425,6 +425,65 @@ fn check_trailing_data_ignored(c: &Corpus, label: &str) {
     );
 }
 
+/// A real file cut short has nothing wrong with it except that it ends.
+///
+/// Fragment reassembly is built on the difference between a validator that
+/// stopped because the data ran out and one that found something that cannot
+/// belong: the first means "append more", the second "the last thing appended
+/// was wrong". A validator that calls a clean truncation a contradiction makes
+/// the reassembler reject the right cluster; one that never says `ran_out` at
+/// all cannot be reassembled with. So every validator must report `ran_out` for
+/// a prefix of a real file, unless that prefix is itself complete - which an
+/// earlier revision of an incrementally saved PDF can be.
+///
+/// Three cuts per file, at a quarter, a half and three quarters.
+fn check_prefixes_ran_out(c: &Corpus, label: &str) {
+    let mut wrong = Vec::new();
+    let mut checked = 0usize;
+    let mut valid_prefixes: BTreeMap<String, usize> = BTreeMap::new();
+    for (rel, s) in &c.files {
+        let Some(id) = validator_for(&s.kind) else {
+            continue;
+        };
+        let data = read(&c.dir, rel);
+        for q in 1..=3usize {
+            let cut = data.len() * q / 4;
+            if cut == 0 || cut >= data.len() {
+                continue;
+            }
+            let out = validate::validate(id, &data[..cut]).expect("validator must exist");
+            checked += 1;
+            if out.status == Status::Valid {
+                *valid_prefixes.entry(s.kind.clone()).or_default() += 1;
+            } else if !out.ran_out {
+                wrong.push(format!(
+                    "{rel} ({}) cut at {cut} of {}: {:?} - {}",
+                    s.kind,
+                    data.len(),
+                    out.status,
+                    out.detail
+                ));
+            }
+        }
+    }
+    eprintln!("  {label}: {checked} prefixes checked");
+    if !valid_prefixes.is_empty() {
+        eprintln!("  {label}: prefixes that are themselves complete: {valid_prefixes:?}");
+    }
+    assert!(
+        wrong.is_empty(),
+        "{label}: {} of {checked} prefixes of real files were called contradictions \
+         rather than truncations:\n{}",
+        wrong.len(),
+        wrong
+            .iter()
+            .take(30)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // the generated corpus
 // ---------------------------------------------------------------------------
@@ -442,6 +501,11 @@ fn generated_corpus_produces_no_cross_format_false_positives() {
 #[test]
 fn generated_corpus_lengths_ignore_trailing_data() {
     check_trailing_data_ignored(generated(), "generated corpus");
+}
+
+#[test]
+fn generated_corpus_prefixes_are_truncations_not_contradictions() {
+    check_prefixes_ran_out(generated(), "generated corpus");
 }
 
 /// The OOXML question specifically: a `.docx` must not come back as `.zip`.
@@ -486,6 +550,11 @@ fn independent_corpus_produces_no_cross_format_false_positives() {
 #[test]
 fn independent_corpus_lengths_ignore_trailing_data() {
     check_trailing_data_ignored(independent(), "independent corpus");
+}
+
+#[test]
+fn independent_corpus_prefixes_are_truncations_not_contradictions() {
+    check_prefixes_ran_out(independent(), "independent corpus");
 }
 
 /// The point of the exercise: state which formats are graded against a foreign

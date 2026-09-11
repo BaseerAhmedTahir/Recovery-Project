@@ -22,7 +22,7 @@ const MAX_CHUNK: u32 = 0x7FFF_FFFF;
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < SIGNATURE.len() {
-        return Outcome::reject("shorter than the PNG signature");
+        return Outcome::reject("shorter than the PNG signature").truncated();
     }
     if d[..8] != SIGNATURE {
         return Outcome::reject("signature mismatch");
@@ -148,9 +148,9 @@ pub fn validate(d: &[u8]) -> Outcome {
 
 fn truncated(at: usize, saw_idat: bool, why: &str) -> Outcome {
     if saw_idat {
-        Outcome::partial(at as u64, format!("truncated: {why}")).with("truncated", true)
+        Outcome::partial(at as u64, format!("truncated: {why}")).truncated()
     } else {
-        Outcome::reject(format!("{why}, before any image data"))
+        Outcome::reject(format!("{why}, before any image data")).truncated()
     }
 }
 

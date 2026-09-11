@@ -43,7 +43,7 @@ pub fn validate_webp(d: &[u8]) -> Outcome {
 /// RIFF walk rather than in its own file makes the difference visible.
 pub fn validate_aiff(d: &[u8]) -> Outcome {
     if d.len() < 12 {
-        return Outcome::reject("shorter than a FORM header");
+        return Outcome::reject("shorter than a FORM header").truncated();
     }
     if &d[..4] != b"FORM" {
         return Outcome::reject("does not begin with FORM");
@@ -122,7 +122,7 @@ pub fn validate_aiff(d: &[u8]) -> Outcome {
                     d.len()
                 ),
             )
-            .with("truncated", true),
+            .truncated(),
         );
     }
     evidence(Outcome::valid(declared_total))
@@ -135,7 +135,7 @@ fn validate_form(
     ext: &'static str,
 ) -> Outcome {
     if d.len() < 12 {
-        return Outcome::reject("shorter than a RIFF header");
+        return Outcome::reject("shorter than a RIFF header").truncated();
     }
     if &d[..4] != b"RIFF" {
         return Outcome::reject("does not begin with RIFF");
@@ -198,7 +198,12 @@ fn validate_form(
     }
 
     if chunks == 0 {
-        return Outcome::reject("no chunks follow the RIFF header");
+        let out = Outcome::reject("no chunks follow the RIFF header");
+        // Either the first chunk id was not a chunk id - not this format - or
+        // the data ended before a whole chunk header, while the RIFF size says
+        // there is more. Only the second is a truncation.
+        let cut_short = at + 8 > d.len() && (d.len() as u64) < declared_total;
+        return if cut_short { out.truncated() } else { out };
     }
 
     let missing: Vec<String> = required
@@ -245,7 +250,7 @@ fn validate_form(
                     d.len()
                 ),
             )
-            .with("truncated", true),
+            .truncated(),
         );
     }
 

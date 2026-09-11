@@ -24,7 +24,7 @@ const HEADER_LEN: usize = 100;
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < HEADER_LEN {
-        return Outcome::reject("shorter than a SQLite header");
+        return Outcome::reject("shorter than a SQLite header").truncated();
     }
     if &d[..16] != MAGIC {
         return Outcome::reject("magic mismatch");
@@ -156,7 +156,7 @@ pub fn validate(d: &[u8]) -> Outcome {
                     d.len()
                 ),
             )
-            .with("truncated", true),
+            .truncated(),
         );
     }
 

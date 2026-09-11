@@ -52,7 +52,7 @@ fn is_sof(m: u8) -> bool {
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < 4 {
-        return Outcome::reject("shorter than a JPEG header");
+        return Outcome::reject("shorter than a JPEG header").truncated();
     }
     if d[0] != 0xFF || d[1] != SOI {
         return Outcome::reject("does not begin with SOI");
@@ -338,11 +338,12 @@ fn out_of_sequence(
 /// Out of data, but we know what it is.
 fn truncated(at: usize, saw_sof: bool, saw_sos: bool, why: &str) -> Outcome {
     if saw_sof && saw_sos {
-        Outcome::partial(at as u64, format!("truncated: {why}")).with("truncated", true)
+        Outcome::partial(at as u64, format!("truncated: {why}")).truncated()
     } else {
         Outcome::reject(format!(
             "{why}, and no complete frame header and scan were seen first"
         ))
+        .truncated()
     }
 }
 
@@ -458,6 +459,10 @@ mod tests {
             Some(last_good.to_string().as_str())
         );
         assert!(out.detail.contains("spliced"), "{}", out.detail);
+        assert!(
+            !out.ran_out,
+            "a splice is a contradiction, not a truncation"
+        );
     }
 
     /// Without DRI there is no interval to bound, so the check must not
@@ -522,6 +527,7 @@ mod tests {
         // The last in-sequence marker is the RST0, three bytes into the scan.
         assert_eq!(out.length, (scan_start + 3) as u64);
         assert!(!out.length_established);
+        assert!(!out.ran_out, "more data cannot put RST5 back in sequence");
     }
 
     #[test]
@@ -572,6 +578,7 @@ mod tests {
         assert_eq!(out.status, Status::Partial, "{}", out.detail);
         assert!(out.length > 0);
         assert!(out.detail.contains("truncated"), "{}", out.detail);
+        assert!(out.ran_out, "nothing is wrong with it but its end");
     }
 
     /// An EXIF thumbnail is a whole JPEG inside APP1 of the outer one. Walking

@@ -26,7 +26,7 @@ const MAX_IMAGES: u16 = 64;
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < HEADER {
-        return Outcome::reject("shorter than an icon directory header");
+        return Outcome::reject("shorter than an icon directory header").truncated();
     }
     if le16(d, 0) != Some(0) {
         return Outcome::reject("the reserved word is not zero");
@@ -95,7 +95,7 @@ pub fn validate(d: &[u8]) -> Outcome {
                 ),
             )
             .with("images", count)
-            .with("truncated", true);
+            .truncated();
         }
 
         // The payload is either an embedded PNG or a bitmap info header.

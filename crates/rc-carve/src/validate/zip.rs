@@ -31,7 +31,7 @@ const ZIP64_MARKER: u32 = 0xFFFF_FFFF;
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < LOCAL.len() {
-        return Outcome::reject("shorter than a ZIP local file header");
+        return Outcome::reject("shorter than a ZIP local file header").truncated();
     }
     if !d.starts_with(LOCAL) {
         return Outcome::reject("does not begin with a local file header");
@@ -82,7 +82,7 @@ pub fn validate(d: &[u8]) -> Outcome {
              justify rather than the file's real size",
         )
         .with("local_headers", locals)
-        .with("truncated", true)
+        .truncated()
     } else {
         Outcome::reject("no central directory and the local header is not plausible")
     }

@@ -17,7 +17,7 @@ const DIB_SIZES: &[u32] = &[12, 16, 40, 52, 56, 64, 108, 124];
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < 18 {
-        return Outcome::reject("shorter than a BMP file header plus a DIB size");
+        return Outcome::reject("shorter than a BMP file header plus a DIB size").truncated();
     }
     if &d[..2] != b"BM" {
         return Outcome::reject("does not begin with BM");
@@ -120,7 +120,8 @@ pub fn validate(d: &[u8]) -> Outcome {
                     d.len()
                 ),
             )
-            .established(),
+            .established()
+            .truncated(),
         );
     }
 

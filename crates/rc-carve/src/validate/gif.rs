@@ -18,7 +18,7 @@ const EXTENSION: u8 = 0x21;
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < 13 {
-        return Outcome::reject("shorter than a GIF header and screen descriptor");
+        return Outcome::reject("shorter than a GIF header and screen descriptor").truncated();
     }
     if &d[..3] != b"GIF" || !matches!(&d[3..6], b"87a" | b"89a") {
         return Outcome::reject("not a GIF87a or GIF89a header");
@@ -134,9 +134,9 @@ fn skip_sub_blocks(d: &[u8], mut at: usize) -> Option<usize> {
 
 fn truncated(at: usize, images: u64, why: &str) -> Outcome {
     if images > 0 {
-        Outcome::partial(at as u64, format!("truncated: {why}")).with("truncated", true)
+        Outcome::partial(at as u64, format!("truncated: {why}")).truncated()
     } else {
-        Outcome::reject(format!("{why}, before any image block"))
+        Outcome::reject(format!("{why}, before any image block")).truncated()
     }
 }
 

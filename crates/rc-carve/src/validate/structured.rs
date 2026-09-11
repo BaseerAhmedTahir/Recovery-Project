@@ -21,7 +21,7 @@ use super::{be16, be32, le16, le32, Outcome};
 /// it. Counting braces naively runs off the end of most real documents.
 pub fn validate_rtf(d: &[u8]) -> Outcome {
     if d.len() < 6 {
-        return Outcome::reject("shorter than an RTF header");
+        return Outcome::reject("shorter than an RTF header").truncated();
     }
     if !d.starts_with(b"{\\rtf") {
         return Outcome::reject("does not begin with {\\rtf");
@@ -64,7 +64,7 @@ pub fn validate_rtf(d: &[u8]) -> Outcome {
         d.len() as u64,
         format!("the outermost group never closes; {depth} still open"),
     )
-    .with("truncated", true)
+    .truncated()
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ pub fn validate_rtf(d: &[u8]) -> Outcome {
 /// endianness comes from the file rather than from an assumption.
 pub fn validate_tiff(d: &[u8]) -> Outcome {
     if d.len() < 8 {
-        return Outcome::reject("shorter than a TIFF header");
+        return Outcome::reject("shorter than a TIFF header").truncated();
     }
     let big = match &d[..2] {
         b"II" => false,
@@ -235,7 +235,8 @@ pub fn validate_tiff(d: &[u8]) -> Outcome {
                 d.len()
             ),
         )
-        .established());
+        .established()
+        .truncated());
     }
     out(Outcome::valid(end))
 }
@@ -308,9 +309,9 @@ fn read_value(d: &[u8], entry_at: usize, typ: u64, k: u64, big: bool) -> Option<
 
 fn truncated_tiff(end: u64, ifds: u64, why: &str) -> Outcome {
     if ifds > 0 {
-        Outcome::partial(end, format!("truncated: {why}")).with("truncated", true)
+        Outcome::partial(end, format!("truncated: {why}")).truncated()
     } else {
-        Outcome::reject(format!("{why}, before any directory was read"))
+        Outcome::reject(format!("{why}, before any directory was read")).truncated()
     }
 }
 
@@ -333,7 +334,7 @@ pub fn validate_evtx(d: &[u8]) -> Outcome {
     const CHUNK: u64 = 65536;
 
     if d.len() < 128 {
-        return Outcome::reject("shorter than an EVTX file header");
+        return Outcome::reject("shorter than an EVTX file header").truncated();
     }
     if &d[..8] != b"ElfFile\0" {
         return Outcome::reject("signature mismatch");
@@ -374,7 +375,8 @@ pub fn validate_evtx(d: &[u8]) -> Outcome {
                 d.len()
             ),
         )
-        .established());
+        .established()
+        .truncated());
     }
     out(Outcome::valid(total))
 }
@@ -388,7 +390,7 @@ pub fn validate_reg_hive(d: &[u8]) -> Outcome {
     const BASE: u64 = 4096;
 
     if d.len() < 48 {
-        return Outcome::reject("shorter than a hive base block");
+        return Outcome::reject("shorter than a hive base block").truncated();
     }
     if &d[..4] != b"regf" {
         return Outcome::reject("signature mismatch");
@@ -430,7 +432,8 @@ pub fn validate_reg_hive(d: &[u8]) -> Outcome {
                 d.len()
             ),
         )
-        .established());
+        .established()
+        .truncated());
     }
     out(Outcome::valid(total))
 }
@@ -443,7 +446,7 @@ pub fn validate_reg_hive(d: &[u8]) -> Outcome {
 /// geometry gives when it is stored raw.
 pub fn validate_psd(d: &[u8]) -> Outcome {
     if d.len() < 34 {
-        return Outcome::reject("shorter than a PSD header");
+        return Outcome::reject("shorter than a PSD header").truncated();
     }
     if &d[..4] != b"8BPS" {
         return Outcome::reject("signature mismatch");
@@ -484,7 +487,7 @@ pub fn validate_psd(d: &[u8]) -> Outcome {
                 at as u64,
                 format!("truncated before the {what} section length"),
             )
-            .with("truncated", true);
+            .truncated();
         };
         let Some(next) = at.checked_add(4).and_then(|v| v.checked_add(n as usize)) else {
             return Outcome::reject(format!("the {what} section length overflows"));
@@ -494,14 +497,13 @@ pub fn validate_psd(d: &[u8]) -> Outcome {
                 at as u64,
                 format!("the {what} section runs past the available data"),
             )
-            .with("truncated", true);
+            .truncated();
         }
         at = next;
     }
 
     let Some(compression) = be16(d, at) else {
-        return Outcome::partial(at as u64, "truncated before the compression method")
-            .with("truncated", true);
+        return Outcome::partial(at as u64, "truncated before the compression method").truncated();
     };
     at += 2;
 
@@ -541,7 +543,8 @@ pub fn validate_psd(d: &[u8]) -> Outcome {
                     d.len()
                 ),
             )
-            .established(),
+            .established()
+            .truncated(),
         );
     }
     evidence(Outcome::valid(total))
@@ -555,7 +558,7 @@ pub fn validate_psd(d: &[u8]) -> Outcome {
 /// headers, and the segments and sections they point at.
 pub fn validate_elf(d: &[u8]) -> Outcome {
     if d.len() < 24 {
-        return Outcome::reject("shorter than an ELF identification header");
+        return Outcome::reject("shorter than an ELF identification header").truncated();
     }
     if &d[..4] != b"\x7FELF" {
         return Outcome::reject("signature mismatch");
@@ -678,7 +681,8 @@ pub fn validate_elf(d: &[u8]) -> Outcome {
                 d.len()
             ),
         )
-        .established());
+        .established()
+        .truncated());
     }
     out(Outcome::valid(end))
 }

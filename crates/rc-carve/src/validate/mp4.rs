@@ -48,7 +48,7 @@ fn is_known_top_level(ty: &[u8; 4]) -> bool {
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < 16 {
-        return Outcome::reject("shorter than a file type box");
+        return Outcome::reject("shorter than a file type box").truncated();
     }
     // The signature matches `ftyp` at offset 4, so the size precedes it.
     if &d[4..8] != b"ftyp" {
@@ -124,9 +124,15 @@ pub fn validate(d: &[u8]) -> Outcome {
             b"moov" => {
                 saw_moov = true;
                 let body = i + header as usize;
-                let end = (at + size).min(d.len() as u64) as usize;
-                if body <= end {
-                    moov = Some((body, end));
+                // Only a complete moov is handed to the sample check. A cut one
+                // has sample tables cut short, and reading them as if whole
+                // would place samples wrongly and call real data spliced - which
+                // for a reassembler working through a file whose index is larger
+                // than one cluster would reject the right cluster every time.
+                if let Some(end) = at.checked_add(size) {
+                    if end <= d.len() as u64 && body as u64 <= end {
+                        moov = Some((body, end as usize));
+                    }
                 }
             }
             b"mdat" => saw_mdat = true,
@@ -157,7 +163,13 @@ pub fn validate(d: &[u8]) -> Outcome {
     };
 
     if boxes < 2 {
-        return Outcome::reject("only the ftyp box could be walked; not a media file");
+        let out = Outcome::reject("only the ftyp box could be walked; not a media file");
+        // Cut off inside the second box header: nothing is wrong yet.
+        return if truncated_at.is_some() {
+            out.truncated()
+        } else {
+            out
+        };
     }
 
     // A truncated H.264 file still has samples that can be checked, and how far
@@ -200,7 +212,7 @@ pub fn validate(d: &[u8]) -> Outcome {
                                  {verified_to}"
                             ),
                         )
-                        .with("truncated", true)
+                        .truncated()
                         .with("avc_samples_checked", samples),
                     );
                 }
@@ -219,7 +231,7 @@ pub fn validate(d: &[u8]) -> Outcome {
         } else {
             "truncated: the box tree runs past the available data"
         };
-        return evidence(Outcome::partial(cut.max(1), why).with("truncated", true));
+        return evidence(Outcome::partial(cut.max(1), why).truncated());
     }
 
     if !saw_moov || !saw_mdat {
@@ -697,6 +709,10 @@ mod tests {
             out.length, offsets[7],
             "should stop where the bad sample begins"
         );
+        assert!(
+            !out.ran_out,
+            "a splice is a contradiction, not a truncation"
+        );
     }
 
     /// A NAL header with its forbidden bit set is not H.264, whatever the
@@ -710,14 +726,13 @@ mod tests {
         assert_eq!(out.evidence_of("bad_sample"), Some("2"));
     }
 
-    /// A reassembler measures progress by how far the validator verifies, so a
-    /// truncated H.264 file must report the samples it has, not just the start
-    /// of its mdat box.
-    #[test]
-    fn a_truncated_h264_file_reports_how_far_its_samples_verify() {
-        let (m, offsets) = avc_mp4(12, 3, 200);
-        // mdat precedes moov in this builder, so cutting inside mdat would cut
-        // away the index. Move moov to the front the way faststart does.
+    /// `avc_mp4` with moov moved in front of mdat, the way faststart writes
+    /// it, and the chunk offsets patched to match. Returns the file and each
+    /// sample's absolute offset. Cutting inside mdat of the builder's own
+    /// layout would cut away the index; this is the layout a reassembler meets
+    /// when it can check samples as it goes.
+    fn faststart_avc_mp4(samples: usize, nals: usize, nal_len: usize) -> (Vec<u8>, Vec<u64>) {
+        let (m, offsets) = avc_mp4(samples, nals, nal_len);
         let moov_at = memchr::memmem::rfind(&m, b"moov").unwrap() - 4;
         let moov = m[moov_at..].to_vec();
         let ftyp_len = u32::from_be_bytes([m[0], m[1], m[2], m[3]]) as usize;
@@ -725,25 +740,60 @@ mod tests {
         let mut fs = m[..ftyp_len].to_vec();
         fs.extend_from_slice(&moov);
         fs.extend_from_slice(&m[ftyp_len..moov_at]);
-        // Chunk offsets moved by the size of moov; patch them.
         let stco = memchr::memmem::find(&fs, b"stco").unwrap() + 4 + 4 + 4;
         for (k, o) in offsets.iter().enumerate() {
             let at = stco + 4 * k;
             fs[at..at + 4].copy_from_slice(&((o + shift) as u32).to_be_bytes());
         }
+        (fs, offsets.iter().map(|o| o + shift).collect())
+    }
+
+    /// A reassembler measures progress by how far the validator verifies, so a
+    /// truncated H.264 file must report the samples it has, not just the start
+    /// of its mdat box.
+    #[test]
+    fn a_truncated_h264_file_reports_how_far_its_samples_verify() {
+        let (fs, offsets) = faststart_avc_mp4(12, 3, 200);
         let full = validate(&fs);
         assert_eq!(full.status, Status::Valid, "{}", full.detail);
 
         // Cut partway through sample 8.
-        let cut = (offsets[8] + shift) as usize + 100;
+        let cut = offsets[8] as usize + 100;
         let out = validate(&fs[..cut]);
         assert_eq!(out.status, Status::Partial, "{}", out.detail);
         assert_eq!(
-            out.length,
-            offsets[8] + shift,
+            out.length, offsets[8],
             "should report the end of sample 7, the last one fully present"
         );
         assert_eq!(out.evidence_of("avc_samples_checked"), Some("8"));
+        assert!(out.ran_out, "nothing is wrong with it but its end");
+    }
+
+    /// The failure the fragmented fixture found, reduced to one file. A sample
+    /// whose last NAL unit's header lies before a fragment boundary tiles
+    /// whatever its tail holds, so filler after the boundary *moves `length`
+    /// forward* - to the end of that sample, past where the good data stopped.
+    /// Only the next sample, which starts in the filler, gives it away. A
+    /// reassembler asking "did the verified length grow?" accepted the filler;
+    /// `ran_out` is what says the answer is a contradiction.
+    #[test]
+    fn filler_after_a_sample_tail_is_a_contradiction_even_though_length_grew() {
+        // Three 204-byte NAL units per sample, so the last header of sample 7
+        // is 204 bytes before its end and an 81-byte cut lands in its payload.
+        let (fs, offsets) = faststart_avc_mp4(12, 3, 200);
+        let boundary = offsets[8] as usize - 81;
+        let mut spliced = fs[..boundary].to_vec();
+        spliced.extend_from_slice(&[0xA5; 4096]);
+
+        let out = validate(&spliced);
+        assert_eq!(out.status, Status::Partial, "{}", out.detail);
+        assert!(
+            out.length > boundary as u64,
+            "the trap: length grew past the good data ({} > {boundary})",
+            out.length
+        );
+        assert!(!out.ran_out, "{}", out.detail);
+        assert_eq!(out.evidence_of("bad_sample"), Some("8"));
     }
 
     /// No avcC, no check - there is no length-field width to parse with. This

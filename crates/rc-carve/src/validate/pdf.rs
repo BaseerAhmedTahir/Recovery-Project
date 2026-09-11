@@ -24,7 +24,7 @@ const STARTXREF: &[u8] = b"startxref";
 
 pub fn validate(d: &[u8]) -> Outcome {
     if d.len() < 8 {
-        return Outcome::reject("shorter than a PDF header");
+        return Outcome::reject("shorter than a PDF header").truncated();
     }
     if !d.starts_with(HEADER) {
         return Outcome::reject("does not begin with %PDF-");
@@ -58,7 +58,7 @@ pub fn validate(d: &[u8]) -> Outcome {
                  last complete object rather than to the file's real end",
             )
             .with("version", version)
-            .with("truncated", true),
+            .truncated(),
             None => Outcome::reject("no %%EOF and no complete object definitions"),
         };
     }

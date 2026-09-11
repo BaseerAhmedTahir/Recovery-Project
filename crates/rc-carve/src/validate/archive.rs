@@ -27,7 +27,7 @@ const SEVENZ_HEADER: u64 = 32;
 /// makes a chance six-byte signature match essentially impossible to sustain.
 pub fn validate_7z(d: &[u8]) -> Outcome {
     if d.len() < SEVENZ_HEADER as usize {
-        return Outcome::reject("shorter than a 7z start header");
+        return Outcome::reject("shorter than a 7z start header").truncated();
     }
     if &d[..6] != SEVENZ_MAGIC {
         return Outcome::reject("signature mismatch");
@@ -74,7 +74,8 @@ pub fn validate_7z(d: &[u8]) -> Outcome {
                 d.len()
             ),
         )
-        .established());
+        .established()
+        .truncated());
     }
     out(Outcome::valid(total))
 }
@@ -86,7 +87,7 @@ pub fn validate_7z(d: &[u8]) -> Outcome {
 /// Microsoft cabinet: `cbCabinet` at offset 8 is the total size, in the header.
 pub fn validate_cab(d: &[u8]) -> Outcome {
     if d.len() < 36 {
-        return Outcome::reject("shorter than a CFHEADER");
+        return Outcome::reject("shorter than a CFHEADER").truncated();
     }
     if &d[..4] != b"MSCF" {
         return Outcome::reject("signature mismatch");
@@ -130,7 +131,8 @@ pub fn validate_cab(d: &[u8]) -> Outcome {
                 d.len()
             ),
         )
-        .established());
+        .established()
+        .truncated());
     }
     out(Outcome::valid(total))
 }

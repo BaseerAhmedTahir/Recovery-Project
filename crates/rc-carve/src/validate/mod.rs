@@ -87,6 +87,24 @@ pub struct Outcome {
     /// candidates. Getting this wrong cost 202 of 228 files on the
     /// quick-formatted fixture, so it is a field rather than a convention.
     pub length_established: bool,
+    /// Whether the validator stopped because the data ended rather than
+    /// because of anything in it.
+    ///
+    /// `true` means the structure held up as far as the bytes went, and more
+    /// of them could extend `length` or complete the file. `false` on anything
+    /// short of `Valid` means the validator found something that cannot
+    /// belong - a checksum that fails, a restart marker out of sequence, a
+    /// sample that does not divide into NAL units - and more bytes would not
+    /// change that. Independent of `status`: a PNG cut before its first IDAT
+    /// is rejected, but only because the data ran out.
+    ///
+    /// The scanner has no use for the difference; either way the candidate is
+    /// damaged. Fragment reassembly is built on it. Appending the right
+    /// cluster to a truncated file leaves it truncated, further along;
+    /// appending a wrong one produces a contradiction. Until this was a field,
+    /// the reassembler could only ask whether `length` grew - and an H.264
+    /// sample whose tail ran 81 bytes into a cluster of filler made it grow.
+    pub ran_out: bool,
 }
 
 impl Outcome {
@@ -100,6 +118,7 @@ impl Outcome {
             // A structurally complete file walked from its first byte to its
             // last; that length is the file's own.
             length_established: true,
+            ran_out: false,
         }
     }
 
@@ -112,6 +131,10 @@ impl Outcome {
             evidence: Vec::new(),
             // A floor unless the validator says otherwise via `established`.
             length_established: false,
+            // Something was wrong unless the validator says via `truncated`
+            // that the data merely ended. The safe default for reassembly: a
+            // validator that does not say is never trusted to be extendable.
+            ran_out: false,
         }
     }
 
@@ -123,7 +146,17 @@ impl Outcome {
             refined_ext: None,
             evidence: Vec::new(),
             length_established: false,
+            ran_out: false,
         }
+    }
+
+    /// Mark this outcome as stopped by the end of the data rather than by
+    /// anything in it. See [`Outcome::ran_out`]. Also recorded as evidence,
+    /// so the reason survives into scoring.
+    pub fn truncated(mut self) -> Outcome {
+        self.ran_out = true;
+        self.evidence.push(("truncated", "true".to_string()));
+        self
     }
 
     /// Mark a `Partial` length as the file's real size, known from a header
