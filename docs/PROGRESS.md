@@ -1,19 +1,26 @@
 # PROGRESS
 
-Running status per SPEC.md section 9. Last updated 2026-09-06.
+Running status per SPEC.md section 9. Last updated 2026-09-11.
 
-**Current state: Milestones 1 and 2 complete and fully verified on Windows.
-Milestone 3 in progress.**
+**Current state: Milestones 1, 2 and 3 complete and verified on Windows.
+Milestone 4 not started - stopping here to report, per the working agreement.**
 
-The toolchain blocker is resolved: C: was freed, VS Build Tools 2022 is
-installed, and the workspace now builds and passes all 196 tests **natively on
-Windows** as well as under WSL. Compiling the Windows backend for the first
-time found three real bugs (a wrong `ReadFile` buffer type, a borrow error in
-the bounce-buffer path, and an unexported IOCTL constant).
+| Milestone 3 criterion | Result |
+|---|---|
+| Carve 20+ formats from a quick-formatted fixture | **22 recovered byte-exactly**, 38 located, from a real quick-formatted NTFS volume |
+| Byte-exact recovery of contiguous files | **228 of 228**, emitting 1.0 candidates per file recovered |
+| Report MB/s | **336 MiB/s** unbuffered from NVMe, median of 5; CPU-bound against a measured 1256 MiB/s disk ceiling |
+| Peak RSS < 2 GB | **25 MiB** at 500,000 candidates; 10x the rows costs 1.28x the peak, and a control proves the test can fail |
 
-Most of the Windows backend is now verified against real hardware. The one
-remaining gap is the sector read itself, which needs Administrator rights and a
-throwaway device; `docs/LIMITATIONS.md` section 1.1 has the exact command.
+403 tests across the workspace, clippy clean with `-D warnings`. The hardware
+sector-read path that was the last Milestone 1 gap was cleared on 2026-09-06
+against a real SD card; `docs/LIMITATIONS.md` section 1.1 has the output.
+
+What is **not** covered, so it is not mistaken for done: fragmented files
+(Milestone 4 - contiguous-only carving should recover none of
+`fragmented-jpeg.img`), 16 formats the carver can locate but not size,
+throughput on anything slower than NVMe, and worker scaling, which reaches only
+about 1.8x at eight threads.
 
 ---
 
@@ -285,7 +292,7 @@ Prerequisites (all of which gate the carving grade being meaningful):
 | Fixtures rebuilt on the adversarial corpus | done, all eight |
 | An NTFS fixture from a driver other than ntfs-3g | done: `ntfs-windows.img`, built by the Microsoft NTFS driver |
 | quickformat verified to retain content | done, checked empirically at build time |
-| Validators doing real structural decoding | done: 12 validators, 126 unit tests plus 8 corpus tests |
+| Validators doing real structural decoding | done: 23 distinct validators covering 28 of 44 signatures; 19 graded by a foreign encoder, 4 unavailable here with reasons |
 | Precision measured alongside recall | done for both: validators on two corpora, scanner on the quickformat fixture |
 | Multi-threaded scanner with a SIMD prefilter | done; prefilter threshold set by measurement |
 | Byte-exact recovery of contiguous files | done: 228 of 228 on the quick-formatted fixture |
@@ -293,8 +300,8 @@ Prerequisites (all of which gate the carving grade being meaningful):
 | Disk-backed candidate index (`rc-index`) | done: 10x the rows costs 1.28x the peak, against a 2.0x bar |
 | Peak RSS under 2 GB | done: 25 MiB at 500,000 candidates |
 | Report MB/s | done: 336 MiB/s unbuffered from NVMe (median of 5), CPU-bound, with the disk's 1256 MiB/s ceiling measured alongside |
-| Throughput measurable | see below |
-| RSS ceiling testable | see below |
+| Throughput measurable | done: unbuffered image reads bypass the page cache, and a test proves the OS enforces it |
+| RSS ceiling testable | done: the memory test grows candidates tenfold, with a deliberately resident control |
 
 Built so far: the signature database (44 formats spanning image, video, audio,
 document, archive and database) with its loader, and the validators. The
@@ -469,7 +476,7 @@ that are technically correct and operationally meaningless.
 
 ---
 
-## Next: Milestone 3 (continued)
+## Milestone 3: notes kept for the record
 
 `rc-carve` signature engine plus validators, `rc-index`, and a throughput
 benchmark. Acceptance: carve 20+ formats from the quick-formatted fixture,
@@ -704,7 +711,7 @@ test therefore reports:
 4. The count surviving validation, as a separate line from the count generated,
    so the validators' contribution is visible rather than assumed.
 
-**Still open for Milestone 3:**
+**Carried past Milestone 3** (none required by its acceptance criteria):
 
 * ~~A throughput number that describes something.~~ Done - see "Throughput,
   measured" below.
