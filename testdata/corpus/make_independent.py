@@ -195,6 +195,17 @@ def magick_samples(magick):
             "webp",
             m(*src, "-define", "webp:lossless=true", "{out}"),
         ),
+        # --- GIF, TIFF and PSD: three more formats whose validators would
+        # otherwise be graded only against my own reading of the spec ---------
+        ("independent/im_gif89.gif", "gif", m(*src, "{out}")),
+        (
+            "independent/im_interlaced.gif",
+            "gif",
+            m(*src, "-interlace", "GIF", "{out}"),
+        ),
+        ("independent/im_le.tif", "tiff_le", m(*src, "-endian", "LSB", "{out}")),
+        ("independent/im_be.tif", "tiff_be", m(*src, "-endian", "MSB", "{out}")),
+        ("independent/im_layers.psd", "psd", m(*src, "{out}")),
         # --- ICO: the directory-plus-images format whose signature is
         # three-quarters zeros, so real ones matter for grading the validator --
         ("independent/im_icon.ico", "ico", m(*src, "-resize", "32x32", "{out}")),
@@ -268,6 +279,9 @@ def ffmpeg_samples(ffmpeg):
             "avi",
             f(*vid, "-c:v", "rawvideo", "{out}"),
         ),
+        # --- AIFF: the big-endian mirror of WAV, and the format most likely
+        # to expose a byte-order slip in a shared chunk walk ------------------
+        ("independent/ff_pcm16.aiff", "aiff", f(*aud, "-c:a", "pcm_s16be", "{out}")),
         # --- a second, independent encoder for three formats ImageMagick
         # also covers, so neither tool is a single point of agreement -------
         (
@@ -294,6 +308,147 @@ def ffmpeg_samples(ffmpeg):
 
 
 # --------------------------------------------------------------------------
+
+
+def _copy_if_magic(src, magic):
+    """Read `src` and return its bytes only if they start with `magic`.
+
+    Used for samples taken from files the operating system happens to ship. A
+    path that exists is not evidence the file is what its extension claims, so
+    the magic is checked before the sample is accepted rather than after a test
+    fails confusingly.
+    """
+    try:
+        with open(src, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    return data if data.startswith(magic) else None
+
+
+def system_samples(outdir):
+    """Samples produced or supplied by the operating system.
+
+    Some formats have no free command-line encoder but are already present on a
+    normal machine, written by software that certainly did not consult this
+    project: Windows ships a licence in RTF, `makecab` is a built-in cabinet
+    writer, and any Linux system binary is an ELF. Those count as foreign
+    encoders in exactly the sense that matters.
+
+    Returns (written, unavailable) where each written entry is
+    (relpath, kind, description, bytes).
+    """
+    written = []
+    unavailable = []
+
+    # --- RTF: Windows ships its own licence as one ------------------------
+    rtf = None
+    for cand in (
+        os.path.join(os.environ.get("SystemRoot", ""), "System32", "license.rtf"),
+        "/usr/share/doc/license.rtf",
+    ):
+        if cand and os.path.isfile(cand):
+            rtf = _copy_if_magic(cand, b"{\\rtf")
+            if rtf:
+                written.append(
+                    ("independent/system_license.rtf", "rtf",
+                     "shipped by the operating system", rtf)
+                )
+                break
+    if not rtf:
+        unavailable.append("rtf (no system-supplied .rtf found and no free CLI writer)")
+
+    # --- CAB: makecab is a Windows built-in --------------------------------
+    cab_exe = _find_exe("makecab")
+    if cab_exe:
+        srcfile = os.path.join(outdir, "_cabsrc.txt")
+        os.makedirs(outdir, exist_ok=True)
+        with open(srcfile, "wb") as fh:
+            # Compressible text, so the cabinet exercises its own compression
+            # rather than storing a blob.
+            fh.write(b"".join(b"cabinet sample line %04d\r\n" % i for i in range(2000)))
+        dest = os.path.join(outdir, "_out.cab")
+        r = _run([cab_exe, srcfile, dest])
+        data = _copy_if_magic(dest, b"MSCF") if r.returncode == 0 else None
+        for tmp in (srcfile, dest, os.path.join(os.getcwd(), "setup.inf"),
+                    os.path.join(os.getcwd(), "setup.rpt")):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        if data:
+            written.append(
+                ("independent/system.cab", "cab", "Windows makecab", data)
+            )
+        else:
+            unavailable.append("cab (makecab is present but produced nothing usable)")
+    else:
+        unavailable.append("cab (no makecab, lcab or gcab on this platform)")
+
+    # --- ELF: any Linux system binary --------------------------------------
+    elf = None
+    for cand in ("/bin/ls", "/usr/bin/ls", "/bin/true"):
+        elf = _copy_if_magic(cand, b"\x7FELF")
+        if elf:
+            written.append(
+                ("independent/system_binary.elf", "elf",
+                 "a Linux system binary (%s)" % cand, elf)
+            )
+            break
+    if not elf and os.name == "nt":
+        # WSL, if it is installed, is a Linux filesystem this machine can read.
+        r = _run(["wsl", "-d", "Ubuntu", "--", "cat", "/bin/ls"])
+        if r.returncode == 0 and r.stdout.startswith(b"\x7FELF"):
+            elf = r.stdout
+            written.append(
+                ("independent/system_binary.elf", "elf",
+                 "a Linux system binary via WSL", elf)
+            )
+    if not elf:
+        unavailable.append("elf (no Linux binary reachable from this machine)")
+
+    # --- 7z: only if a 7-Zip binary is installed ---------------------------
+    sevenzip = _find_exe("7z") or _find_exe("7za")
+    if sevenzip:
+        srcfile = os.path.join(outdir, "_7zsrc.bin")
+        os.makedirs(outdir, exist_ok=True)
+        with open(srcfile, "wb") as fh:
+            fh.write(b"".join(b"seven zip sample %04d\n" % i for i in range(2000)))
+        dest = os.path.join(outdir, "_out.7z")
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        r = _run([sevenzip, "a", "-bso0", "-bsp0", dest, srcfile])
+        data = _copy_if_magic(dest, b"7z\xBC\xAF\x27\x1C") if r.returncode == 0 else None
+        for tmp in (srcfile, dest):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        if data:
+            written.append(("independent/system.7z", "7z", "7-Zip", data))
+        else:
+            unavailable.append("7z (a 7z binary is present but produced nothing usable)")
+    else:
+        unavailable.append(
+            "7z (7-Zip is not installed; its Windows installer requires elevation, "
+            "so an unattended session cannot add it)"
+        )
+
+    # --- formats with no reachable foreign producer ------------------------
+    unavailable.append(
+        "rar (no free writer exists; WinRAR is proprietary and trialware)"
+    )
+    unavailable.append(
+        "reg_hive (`reg save` needs SeBackupPrivilege, which an unelevated "
+        "session does not hold)"
+    )
+    unavailable.append(
+        "evtx (the system event logs are not readable without elevation, and "
+        "nothing else writes the format)"
+    )
+    return written, unavailable
 
 
 def native_pe():
@@ -364,6 +519,22 @@ def build(outdir):
             "pe (a Windows executable cannot be produced on %s; the PE validator "
             "is graded by hand-built vectors here)" % os.name
         )
+
+    # Samples the operating system produces or already holds.
+    system_written, system_unavailable = system_samples(outdir)
+    unavailable.extend(system_unavailable)
+    for rel, kind, description, data in system_written:
+        dest = os.path.join(outdir, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(data)
+        manifest[rel] = {
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+            "kind": kind,
+            "generator": "system",
+            "generator_version": description,
+        }
 
     failures = []
     for rel, kind, argv, tool in plan:

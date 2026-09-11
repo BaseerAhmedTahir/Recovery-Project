@@ -289,7 +289,7 @@ Prerequisites (all of which gate the carving grade being meaningful):
 | Precision measured alongside recall | done for both: validators on two corpora, scanner on the quickformat fixture |
 | Multi-threaded scanner with a SIMD prefilter | done; prefilter threshold set by measurement |
 | Byte-exact recovery of contiguous files | done: 228 of 228 on the quick-formatted fixture |
-| Carve 20+ formats | done against a synthetic image: 38 of 38; not yet from a real quick-formatted volume |
+| Carve 20+ formats from a quick-formatted fixture | done: 38 located, 22 recovered byte-exactly, from a real quick-formatted NTFS volume |
 | Disk-backed candidate index (`rc-index`) | done: 10x the rows costs 1.28x the peak, against a 2.0x bar |
 | Peak RSS under 2 GB | done: 25 MiB at 500,000 candidates |
 | Throughput measurable | see below |
@@ -350,8 +350,12 @@ agreement.
 | `zip` | Python `zipfile` |
 | `sqlite` | Python `sqlite3` |
 
-All 32 accepted with exact lengths, 352 cross-format trials,
-zero false positives. The variants move the structures the validators actually
+All 41 accepted with exact lengths, 902 cross-format trials, zero false
+positives - and the corpus earned its keep twice more: a real signed Windows
+binary showed the PE validator missing 2661 bytes of overlay, and real
+ImageMagick TIFFs showed it stopping 70 bytes short, because a directory value
+larger than four bytes is stored past the image data and my own hand-written
+sample had none. The variants move the structures the validators actually
 walk rather than just adding files: progressive vs baseline JPEG, interlaced
 and 16-bit PNG, three BMP bit depths, lossy vs lossless WebP, and - confirmed
 by reading the box order back out - an MP4 written `ftyp, moov, free, mdat`
@@ -528,18 +532,36 @@ Two validators were written *because* of this measurement rather than from the
 format list: `ico` (3782 of 4060 candidates before it existed) and `pe` (50, in
 a fixture containing no executables).
 
-### Format coverage: 38 of 38
+### Format coverage: 38 located, 22 recovered
 
 Milestone 3 asks for 20+ formats. `testdata/corpus/formats.py` builds one
 ordinary file of every format the signature database claims to know - 38
 distinct formats - and `tests/formats.rs` lays them at cluster-aligned offsets
 and carves them back.
 
+Measured against a real NTFS volume that was formatted, populated and then
+quick-reformatted - not a synthetic image.
+
 | Measure | Value |
 |---|---|
-| Formats found by their own signature | **38 of 38** |
-| Recovered byte-exactly | 10 (every format whose validator establishes a length) |
-| Header matches | 100 for 38 files |
+| **Located** (candidate at the file's true offset, right signature) | **38 of 38** |
+| **Recovered byte-exactly** (carved bytes hash to the original) | **22 of 38** |
+| Header matches | 572 = 1144 per GB |
+| Candidates emitted | 43 |
+
+Those are two different claims and both are reported, because locating a file
+and recovering it are not the same thing: establishing a file's *end* needs a
+validator, and a signature without one leaves the carver knowing where a file
+starts and nothing more. Reporting only the first number would be the "eighty
+thousand candidates with perfect recall" failure in a different costume.
+
+Recovery rose from 10 to 22 by writing validators for the formats that state
+their own length in a header - 7z, CAB, GIF, RTF, TIFF, EVTX, registry hives,
+ELF, PSD and AIFF. The 16 still unsized need decoding rather than a header
+read: gzip and bzip2 and xz would have to be decompressed, MP3 and FLAC and Ogg
+walked frame by frame, and OLE2, MKV, FLV, ASF and MPEG-PS walked through
+nested structures. `eml` has no length at all - a mail message ends where the
+next thing begins.
 
 Where the bytes come from is split deliberately. gzip, bzip2 and xz come from
 zlib, libbzip2 and liblzma; WAV from Python's `wave`; ZIP from `zipfile`; the
@@ -554,12 +576,26 @@ MFT, so a resident file is unrecoverable by carving however good the carver is,
 and a corpus of 200-byte samples would have measured nothing. The generator's
 self-check enforces that floor and caught three samples that were under it.
 
-Two bugs came out of building this. The `vhd` signature read "connecti" for a
-cookie that is "conectix" and could never have fired. And every `.m4a` carved
-as `.mp4`: both signatures match the same bytes - `ftyp` at offset 4, and
-`ftypM4A ` at offset 4 - so one suppressed the other as contained, by database
-order. The longer header is the more specific claim and now wins, which is the
-same rule that keeps a `.docx` from coming back as a `.zip`.
+Bugs this turned up, in the order they appeared:
+
+* `vhd` read "connecti" for a cookie that is "conectix" and could never have
+  fired. Sweeping all 44 headers the same way then found `sqlite_wal` matching
+  only one of the two legal WAL magics.
+* Every `.m4a` carved as `.mp4`. Both signatures match the same bytes - `ftyp`
+  at offset 4 and `ftypM4A ` at offset 4 - so one suppressed the other as
+  contained, by database order. The longer header is the more specific claim
+  and now wins, the same rule that keeps a `.docx` from coming back as `.zip`.
+* The WAL sample was not reproducible: SQLite randomises Salt-1 and Salt-2 in
+  every header and checksums over them, so 207 bytes moved between runs. The
+  corpus self-check now builds every sample twice and compares.
+* Writing the validators found three of my own samples wrong - an EVTX
+  declaring a 1-byte header block, an ELF segment claiming more bytes than its
+  file held, and a 7z whose `NextHeaderOffset` was written absolute when the
+  field is relative to the end of the signature header.
+* `validate/mod.rs` contained three raw NUL bytes, written by a heredoc that
+  collapsed `\x00` into an actual zero byte. Rust accepts that inside a byte
+  string, so it compiled and 130 tests passed while the file was binary to
+  every text tool. Only that one file was affected; the whole tree was checked.
 
 ### rc-index: the memory criterion, measured
 
@@ -618,10 +654,9 @@ test therefore reports:
 **Still open for Milestone 3:**
 
 * **A throughput number that describes something.** See below.
-* **Folding the format corpus into a real quick-formatted volume.** The
-  coverage below is measured against a synthetic image; carving them out of a
-  volume the NTFS driver actually formatted is a fixture rebuild and is the
-  remaining half of the criterion.
+* **Sizing the remaining 16 formats.** Each needs decoding rather than a header
+  read; see the format-coverage section. None is required by Milestone 3, and
+  the number is reported rather than hidden.
 * **`rc-cli carve`**, wiring the scanner to the index. SPEC.md is explicit
   that the CLI is the source of truth and everything must be reachable there.
 

@@ -271,11 +271,10 @@ fn validated_formats_are_recovered_byte_exactly() {
         mismatched.len(),
         mismatched.join("\n  ")
     );
-    // Every format with a validator that reports an established length should
-    // land here. Twelve validators cover fourteen signature entries.
+    // Every format whose validator establishes a length should land here.
     assert!(
-        recovered.len() >= 10,
-        "expected at least 10 formats recovered byte-exactly, got {}: {recovered:?}",
+        recovered.len() >= 22,
+        "expected at least 22 formats recovered byte-exactly, got {}: {recovered:?}",
         recovered.len()
     );
 }
@@ -423,7 +422,11 @@ fn formats_are_carved_from_a_real_quick_formatted_volume() {
             unsized_.len(),
             unsized_
         );
-        eprintln!("    These are header-match-only signatures. The carver knows");
+        eprintln!(
+            "    For these the carver knows where the file starts and cannot\n\
+             \x20   establish where it ends: either the signature has no validator,\n\
+             \x20   or the format's length needs decoding rather than a header read."
+        );
         eprintln!("    where the file starts and has nothing to tell it where it ends.");
     }
 
@@ -441,10 +444,14 @@ fn formats_are_carved_from_a_real_quick_formatted_volume() {
         all.len()
     );
     // Byte-exact recovery, for every format whose structure permits a length.
-    // This number is the one to watch: it rises only by writing validators.
+    // This number is the one to watch: it rises only by writing validators, and
+    // it is the criterion read strictly - 20+ formats *recovered*, not merely
+    // located. Set from measurement after the fact, not chosen in advance: the
+    // first run of this test recovered 10 and passed, because the bar was 1.
     assert!(
-        recovered.len() >= 10,
-        "byte-exact recovery fell to {} formats; it was 10",
-        recovered.len()
+        recovered.len() >= 22,
+        "byte-exact recovery fell to {} formats; it was 22. Missing: {:?}",
+        recovered.len(),
+        all.difference(&recovered).collect::<Vec<_>>()
     );
 }

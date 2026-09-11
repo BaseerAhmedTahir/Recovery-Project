@@ -21,7 +21,9 @@
 //! panic on malformed input - every one of them is parsing bytes recovered
 //! from a damaged disk, which is the definition of hostile input.
 
+pub mod archive;
 pub mod bmp;
+pub mod gif;
 pub mod ico;
 pub mod jpeg;
 pub mod mp4;
@@ -30,6 +32,7 @@ pub mod pe;
 pub mod png;
 pub mod riff;
 pub mod sqlite;
+pub mod structured;
 pub mod zip;
 
 /// How much of the format's own structure held up.
@@ -167,8 +170,9 @@ impl Outcome {
 /// Kept next to the dispatcher so the two cannot drift apart, and asserted
 /// against the shipped signature database in the tests below.
 pub const VALIDATOR_IDS: &[&str] = &[
-    "bmp", "ico", "jpeg", "mp4", "pdf", "pe", "png", "riff_avi", "riff_wav", "riff_webp",
-    "sqlite", "zip",
+    "7z", "bmp", "cab", "elf", "evtx", "gif", "ico", "jpeg", "mp4", "pdf", "pe", "png",
+    "psd", "rar", "reg_hive", "riff_aiff", "riff_avi", "riff_wav", "riff_webp", "rtf",
+    "sqlite", "tiff", "zip",
 ];
 
 /// Run the validator named by `id` over a candidate.
@@ -180,17 +184,28 @@ pub const VALIDATOR_IDS: &[&str] = &[
 /// header-match-only by design.
 pub fn validate(id: &str, data: &[u8]) -> Option<Outcome> {
     Some(match id {
+        "7z" => archive::validate_7z(data),
         "bmp" => bmp::validate(data),
+        "cab" => archive::validate_cab(data),
+        "elf" => structured::validate_elf(data),
+        "evtx" => structured::validate_evtx(data),
+        "gif" => gif::validate(data),
         "ico" => ico::validate(data),
         "jpeg" => jpeg::validate(data),
         "mp4" => mp4::validate(data),
         "pdf" => pdf::validate(data),
         "pe" => pe::validate(data),
         "png" => png::validate(data),
+        "psd" => structured::validate_psd(data),
+        "rar" => archive::validate_rar(data),
+        "reg_hive" => structured::validate_reg_hive(data),
+        "riff_aiff" => riff::validate_aiff(data),
         "riff_avi" => riff::validate_avi(data),
         "riff_wav" => riff::validate_wav(data),
         "riff_webp" => riff::validate_webp(data),
+        "rtf" => structured::validate_rtf(data),
         "sqlite" => sqlite::validate(data),
+        "tiff" => structured::validate_tiff(data),
         "zip" => zip::validate(data),
         _ => return None,
     })
@@ -332,7 +347,7 @@ mod tests {
 endobj
 ".to_vec()),
             ("zip", {
-                let mut v = b"PK".to_vec();
+                let mut v = b"PK\x03\x04".to_vec();
                 v.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
                 v.extend_from_slice(&0u32.to_le_bytes());
                 v.extend_from_slice(&5u32.to_le_bytes());
@@ -345,7 +360,7 @@ endobj
             }),
             ("mp4", {
                 let mut v = 24u32.to_be_bytes().to_vec();
-                v.extend_from_slice(b"ftypisom   isom");
+                v.extend_from_slice(b"ftypisom\x00\x00\x02\x00isom");
                 v.extend_from_slice(&64u32.to_be_bytes());
                 v.extend_from_slice(b"moov");
                 v.extend_from_slice(&[0x11; 56]);

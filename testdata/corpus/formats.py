@@ -590,7 +590,11 @@ def make_rar5(seed):
 
 def make_7z(seed):
     """7z: signature, version, a CRC over the start header, then the header."""
-    start = struct.pack("<QQI", 32, 9000, 0)
+    # NextHeaderOffset is relative to the END of the 32-byte signature header,
+    # not to the start of the file, so a next header that follows immediately
+    # is at offset 0. Writing 32 here made the validator compute 9064 bytes for
+    # a 9032-byte file.
+    start = struct.pack("<QQI", 0, 9000, 0)
     crc = zlib.crc32(start) & 0xFFFFFFFF
     out = bytes.fromhex("377ABCAF271C") + bytes([0, 4])
     out += struct.pack("<I", crc) + start + _filler(seed, 9000)
@@ -612,15 +616,26 @@ def make_cab(seed):
     return bytes(out)
 
 
-def make_elf(seed):
-    """ELF64 little-endian header plus a program header and payload."""
+def make_elf(seed, payload=9000):
+    """ELF64 little-endian: header, one PT_LOAD program header, payload.
+
+    p_filesz covers the whole file rather than a round number picked by hand.
+    The first version declared 9000 bytes in a file padded to 8192, so the
+    segment ran past its own end - a validator that walks the program headers
+    reports that as truncated, correctly.
+    """
+    total = 64 + 56 + payload
     out = bytearray(b"\x7FELF")
     out += bytes([2, 1, 1, 0]) + b"\x00" * 8   # 64-bit, LE, version 1, System V
     out += struct.pack("<HHI", 2, 0x3E, 1)     # ET_EXEC, x86-64, version
-    out += struct.pack("<QQQ", 0x400000, 64, 0)
-    out += struct.pack("<IHHHHHH", 0, 64, 56, 1, 64, 0, 0)
-    out += struct.pack("<IIQQQQQQ", 1, 5, 0, 0x400000, 0x400000, 9000, 9000, 0x1000)
-    return _pad(bytes(out), seed)
+    out += struct.pack("<QQQ", 0x400000, 64, 0)  # entry, phoff, shoff
+    # flags, ehsize, phentsize, phnum, shentsize, shnum, shstrndx
+    out += struct.pack("<IHHHHHH", 0, 64, 56, 1, 0, 0, 0)
+    out += struct.pack(
+        "<IIQQQQQQ", 1, 5, 0, 0x400000, 0x400000, total, total, 0x1000
+    )
+    out += _filler(seed, payload)
+    return bytes(out)
 
 
 def make_exe_pe(seed):
@@ -657,14 +672,25 @@ def make_exe_pe(seed):
     return bytes(out)
 
 
-def make_evtx(seed):
-    """Windows event log: 'ElfFile\\0' then the file header's counters."""
+def make_evtx(seed, chunks=1):
+    """Windows event log: a 4096-byte header, then fixed 64 KiB chunks.
+
+    The size is not padding: EVTX chunks are exactly 65536 bytes and the header
+    block is exactly 4096, so a file is 4096 + 65536*N and nothing else. The
+    first version of this sample declared a header block size of 1 and stopped
+    at 8 KiB, which is not a shape any real EVTX has - writing the validator is
+    what surfaced it.
+    """
     out = bytearray(b"ElfFile\x00")
-    out += struct.pack("<QQQ", 0, 1, 1)       # first/last chunk, next record id
-    out += struct.pack("<IHHHH", 128, 1, 3, 1, 1)
+    out += struct.pack("<QQQ", 0, chunks, 1)  # first/last chunk, next record id
+    # HeaderSize, MinorVersion, MajorVersion, HeaderBlockSize, NumberOfChunks.
+    out += struct.pack("<IHHHH", 128, 1, 3, 4096, chunks)
     out += b"\x00" * 76
     out += struct.pack("<I", 0)               # checksum placeholder
-    return _pad(bytes(out), seed)
+    out += b"\x00" * (4096 - len(out))
+    for i in range(chunks):
+        out += _filler(seed + i, 65536)
+    return bytes(out)
 
 
 def make_reg_hive(seed):

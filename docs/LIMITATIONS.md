@@ -381,19 +381,33 @@ hand-built PE vectors have no overlay because I would not have thought to add
 one. Bounding it needs content heuristics and belongs with `rc-bifrag` in
 Milestone 4.
 
-### 3.7 Fourteen of the 44 signatures have a validator; 30 do not
+### 3.7 Twenty-eight of the 44 signatures have a validator; 16 do not
+
+Counted, not estimated: 28 entries name a validator, drawn from 23 distinct
+implementations - the three RIFF forms share a walk, MP4 covers HEIC and M4A,
+TIFF covers both byte orders, GIF covers 87a and 89a, and RAR covers 4 and 5.
 
 A signature without a validator is a header match and nothing more: it is
-emitted with no length and a `Partial` status saying why. Those 14 draw on 12 distinct validators, since the three RIFF
-forms share a walk and MP4 covers HEIC and M4A too. On the quick-formatted
-fixture the two noisiest header-only formats - ICO and PE - were 3832 of 4060 candidates
-before validators were written for them, so this is the dominant precision
-lever left.
+emitted with no length and a `Partial` status saying why. That is not a
+cosmetic gap. On the format fixture, 38 of 38 formats are located and only 22
+are recovered byte-exactly, and the difference is exactly the formats whose end
+the carver cannot establish.
 
-The ones most likely to matter next, in rough order of how often a header-only
-match will be wrong: `gif`, `tiff_le`/`tiff_be`, `mp3_id3`, `ole2`, `rar`,
-`7z`, `gzip`, `mkv`. GIF and TIFF are cheap to validate and ImageMagick can
-already produce both for the independent corpus.
+The 16 remaining need decoding rather than a header read, which is why they are
+still open:
+
+| Format | Why the end is hard |
+|---|---|
+| `gzip`, `bzip2`, `xz` | the length is only known after decompressing, or - for bzip2 - by finding a *bit*-aligned end-of-stream magic |
+| `mp3_id3`, `flac`, `ogg` | frame or page walks; Ogg additionally needs its own CRC variant, which is not the CRC-32 used by PNG and ZIP |
+| `ole2`, `mkv`, `flv`, `asf_wmv`, `mpeg_ps` | nested structures with no total in the header |
+| `rar`, `rar5` | a block chain, encoded differently in each version |
+| `sqlite_wal` | frames chain by checksum; the count is not stored |
+| `vhd` | a dynamic VHD's size comes from its block allocation table |
+| `eml` | a mail message has no length at all - it ends where the next thing begins |
+
+Earlier drafts of this section named ICO, PE, GIF, TIFF, 7z and RAR as the next
+targets. Those are done; the list above is what is genuinely left.
 
 ---
 

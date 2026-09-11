@@ -17,7 +17,7 @@
 //! these are exercised only against hand-built byte vectors. See
 //! `docs/LIMITATIONS.md` section 4.
 
-use super::{le32, Outcome};
+use super::{be32, le32, Outcome};
 
 pub fn validate_wav(d: &[u8]) -> Outcome {
     validate_form(d, b"WAVE", &[b"fmt ", b"data"], "wav")
@@ -33,6 +33,99 @@ pub fn validate_webp(d: &[u8]) -> Outcome {
     // Any one of the three bitstream chunks is enough: VP8 is lossy, VP8L is
     // lossless, VP8X is the extended form used for animation and alpha.
     validate_form(d, b"WEBP", &[], "webp")
+}
+
+/// AIFF: the same idea as RIFF with the bytes the other way round.
+///
+/// `FORM` is Electronic Arts' IFF container, which RIFF is a little-endian
+/// copy of, so the walk is identical apart from the byte order - which is
+/// exactly the kind of detail that gets copied wrong. Keeping it beside the
+/// RIFF walk rather than in its own file makes the difference visible.
+pub fn validate_aiff(d: &[u8]) -> Outcome {
+    if d.len() < 12 {
+        return Outcome::reject("shorter than a FORM header");
+    }
+    if &d[..4] != b"FORM" {
+        return Outcome::reject("does not begin with FORM");
+    }
+    let form_size = be32(d, 4).unwrap_or(0) as u64;
+    if form_size < 4 {
+        return Outcome::reject("the FORM size field is smaller than its own form type");
+    }
+    let form = &d[8..12];
+    // AIFF is uncompressed; AIFC is the compressed variant and uses the same
+    // chunk layout.
+    if form != b"AIFF" && form != b"AIFC" {
+        return Outcome::reject(format!(
+            "form type is {:?}, not AIFF or AIFC",
+            String::from_utf8_lossy(form)
+        ));
+    }
+    let declared_total = form_size + 8;
+
+    let mut at = 12usize;
+    let mut seen: Vec<[u8; 4]> = Vec::new();
+    let mut chunks = 0u64;
+    let mut walked_past_end = false;
+    let limit = (declared_total as usize).min(d.len());
+
+    while at + 8 <= limit {
+        let id: [u8; 4] = [d[at], d[at + 1], d[at + 2], d[at + 3]];
+        if !id.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+            break;
+        }
+        let size = be32(d, at + 4).unwrap_or(0) as u64;
+        seen.push(id);
+        chunks += 1;
+        // Chunks pad to an even boundary and the pad byte is not counted,
+        // exactly as in RIFF.
+        let advance = size + (size & 1);
+        let Some(next) = (at as u64 + 8).checked_add(advance) else {
+            walked_past_end = true;
+            break;
+        };
+        if next > d.len() as u64 {
+            walked_past_end = true;
+            break;
+        }
+        at = next as usize;
+    }
+
+    if chunks == 0 {
+        return Outcome::reject("no chunks follow the FORM header");
+    }
+    let missing: Vec<&str> = [&b"COMM"[..], &b"SSND"[..]]
+        .iter()
+        .filter(|r| !seen.iter().any(|c| c[..] == ***r))
+        .map(|r| std::str::from_utf8(r).unwrap_or("?"))
+        .collect();
+
+    let evidence = |o: Outcome| {
+        o.with_ext("aiff")
+            .with("form", String::from_utf8_lossy(form).to_string())
+            .with("chunks", chunks)
+            .with("declared_bytes", declared_total)
+    };
+
+    if !missing.is_empty() {
+        return evidence(Outcome::partial(
+            (at as u64).min(d.len() as u64),
+            format!("required chunk(s) missing: {}", missing.join(", ")),
+        ));
+    }
+    if declared_total > d.len() as u64 || walked_past_end {
+        return evidence(
+            Outcome::partial(
+                (at as u64).min(d.len() as u64),
+                format!(
+                    "declares {declared_total} bytes but only {} are available; truncated",
+                    d.len()
+                ),
+            )
+            .with("truncated", true),
+        );
+    }
+    evidence(Outcome::valid(declared_total))
 }
 
 fn validate_form(
@@ -196,6 +289,60 @@ mod tests {
         let mut body = chunk(b"LIST", &hdrl);
         body.extend(chunk(b"LIST", &movi));
         riff(b"AVI ", body)
+    }
+
+    fn aiff() -> Vec<u8> {
+        fn bchunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut v = id.to_vec();
+            v.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            v.extend_from_slice(data);
+            if data.len() % 2 == 1 {
+                v.push(0);
+            }
+            v
+        }
+        let rate = [0x40u8, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0];
+        let frames = vec![0x33u8; 2048];
+        let mut comm = (1u16).to_be_bytes().to_vec();
+        comm.extend_from_slice(&((frames.len() / 2) as u32).to_be_bytes());
+        comm.extend_from_slice(&16u16.to_be_bytes());
+        comm.extend_from_slice(&rate);
+        let mut ssnd = 0u32.to_be_bytes().to_vec();
+        ssnd.extend_from_slice(&0u32.to_be_bytes());
+        ssnd.extend_from_slice(&frames);
+
+        let mut body = b"AIFF".to_vec();
+        body.extend(bchunk(b"COMM", &comm));
+        body.extend(bchunk(b"SSND", &ssnd));
+        let mut v = b"FORM".to_vec();
+        v.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        v.extend_from_slice(&body);
+        v
+    }
+
+    #[test]
+    fn accepts_a_well_formed_aiff() {
+        let a = aiff();
+        let out = validate_aiff(&a);
+        assert_eq!(out.status, Status::Valid, "{}", out.detail);
+        assert_eq!(out.length, a.len() as u64);
+        assert_eq!(out.refined_ext, Some("aiff"));
+    }
+
+    /// The byte order is the whole difference from RIFF, so a WAV must not
+    /// validate as an AIFF and vice versa.
+    #[test]
+    fn aiff_and_wav_do_not_accept_each_other() {
+        assert_ne!(validate_aiff(&wav()).status, Status::Valid);
+        assert_ne!(validate_wav(&aiff()).status, Status::Valid);
+    }
+
+    #[test]
+    fn aiff_trailing_bytes_do_not_extend_the_length() {
+        let mut a = aiff();
+        let real = a.len();
+        a.extend_from_slice(&[0xEE; 4096]);
+        assert_eq!(validate_aiff(&a).length, real as u64);
     }
 
     #[test]

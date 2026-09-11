@@ -54,7 +54,7 @@
       "header": "474946383961",
       "id": "gif",
       "max_size": 33554432,
-      "validator": "none"
+      "validator": "gif"
     },
     {
       "category": "image",
@@ -63,7 +63,7 @@
       "header": "474946383761",
       "id": "gif87",
       "max_size": 33554432,
-      "validator": "none"
+      "validator": "gif"
     },
     {
       "category": "image",
@@ -80,7 +80,7 @@
       "header": "49492A00",
       "id": "tiff_le",
       "max_size": 268435456,
-      "validator": "none"
+      "validator": "tiff"
     },
     {
       "category": "image",
@@ -88,7 +88,7 @@
       "header": "4D4D002A",
       "id": "tiff_be",
       "max_size": 268435456,
-      "validator": "none"
+      "validator": "tiff"
     },
     {
       "category": "image",
@@ -131,7 +131,7 @@
       "header": "38425053",
       "id": "psd",
       "max_size": 536870912,
-      "validator": "none"
+      "validator": "psd"
     },
     {
       "category": "image",
@@ -239,7 +239,7 @@
       "header": "464F524D",
       "id": "aiff",
       "max_size": 1073741824,
-      "validator": "none"
+      "validator": "riff_aiff"
     },
     {
       "category": "document",
@@ -258,7 +258,7 @@
       "header": "7B5C727466",
       "id": "rtf",
       "max_size": 67108864,
-      "validator": "none"
+      "validator": "rtf"
     },
     {
       "category": "document",
@@ -293,7 +293,7 @@
       "header": "526172211A0700",
       "id": "rar",
       "max_size": 8589934592,
-      "validator": "none"
+      "validator": "rar"
     },
     {
       "category": "archive",
@@ -301,7 +301,7 @@
       "header": "526172211A070100",
       "id": "rar5",
       "max_size": 8589934592,
-      "validator": "none"
+      "validator": "rar"
     },
     {
       "category": "archive",
@@ -309,7 +309,7 @@
       "header": "377ABCAF271C",
       "id": "7z",
       "max_size": 8589934592,
-      "validator": "none"
+      "validator": "7z"
     },
     {
       "category": "archive",
@@ -341,7 +341,7 @@
       "header": "4D53434600000000",
       "id": "cab",
       "max_size": 2147483648,
-      "validator": "none"
+      "validator": "cab"
     },
     {
       "category": "database",
@@ -367,7 +367,7 @@
       "header": "7F454C46",
       "id": "elf",
       "max_size": 536870912,
-      "validator": "none"
+      "validator": "elf"
     },
     {
       "category": "database",
@@ -385,7 +385,7 @@
       "header": "456C6646696C6500",
       "id": "evtx",
       "max_size": 1073741824,
-      "validator": "none"
+      "validator": "evtx"
     },
     {
       "category": "other",
@@ -393,7 +393,7 @@
       "header": "72656766",
       "id": "reg_hive",
       "max_size": 1073741824,
-      "validator": "none"
+      "validator": "reg_hive"
     },
     {
       "category": "other",

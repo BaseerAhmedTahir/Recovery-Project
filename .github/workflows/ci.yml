@@ -57,10 +57,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ntfs-3g dosfstools exfatprogs exfat-fuse e2fsprogs util-linux
 
-      # Eight of the ten validators would otherwise be graded only against
+      # Without these, most of the validators would be graded only against
       # encoders written in this repository, which cannot catch a misreading of
-      # a spec shared between an encoder and its validator. ImageMagick and
-      # ffmpeg supply files neither this project nor its author had a hand in.
+      # a spec shared between an encoder and its validator. That is not
+      # theoretical: real ImageMagick TIFFs caught the validator stopping 70
+      # bytes short, because directory values larger than four bytes are stored
+      # past the image data and my own hand-written sample had none.
+      #
+      # 7-Zip is here because its Windows installer needs elevation, so an
+      # unattended developer session cannot add it and reports 7z as
+      # unavailable; CI can, and does.
       #
       # The corpus test FAILS rather than skips when these are absent - a
       # coverage gap that lets the suite pass is exactly what it exists to
@@ -69,11 +75,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq imagemagick ffmpeg
+          sudo apt-get install -y -qq imagemagick ffmpeg p7zip-full
 
       - name: Install independent encoders (Windows)
         if: runner.os == 'Windows'
-        run: choco install -y --no-progress imagemagick.tool ffmpeg
+        run: choco install -y --no-progress imagemagick.tool ffmpeg 7zip
 
       - name: Allow fixture generation to use sudo
         if: runner.os == 'Linux'
