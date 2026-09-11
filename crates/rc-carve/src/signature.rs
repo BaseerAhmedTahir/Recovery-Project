@@ -94,19 +94,60 @@ impl Signature {
         }
     }
 
-    /// The first byte the scanner can prefilter on, and its offset.
+    /// The byte the scanner searches for, and its offset from the file start.
     ///
-    /// The scanner finds candidates by searching for this single byte with a
-    /// SIMD-accelerated memchr and only then does the full comparison, which is
-    /// what keeps the scan near device speed.
+    /// The scanner finds candidates by searching for one byte of each header
+    /// and doing the full comparison only at a hit, so the byte chosen decides
+    /// how many full comparisons happen. It is the header's *rarest* byte, not
+    /// its first.
+    ///
+    /// That distinction was found by the throughput benchmark, not by review.
+    /// `ico` (`00 00 01 00`) and `mpeg_ps` (`00 00 01 BA`) both begin with a
+    /// zero, and the quick-formatted fixture is 98.6% zeros, so anchoring on
+    /// the first byte made nearly every byte of the image a hit - 532 million
+    /// full header comparisons in a 537 MB scan, and an engine that ran at 16
+    /// MiB/s. It is worse than a benchmark artefact: the free space of a
+    /// freshly formatted drive is zeros and erased flash is `0xFF`, which is
+    /// how `jpeg` begins, so the media this tool suits best are exactly the
+    /// ones where a first-byte anchor degrades to checking every byte.
+    ///
+    /// Masked bytes are skipped, since a byte that is only partly specified
+    /// cannot be searched for exactly.
     pub fn prefilter_byte(&self) -> Option<(u8, usize)> {
-        // A masked first byte cannot be prefiltered on exactly.
-        if let Some(mask) = &self.header_mask {
-            if mask.first().copied().unwrap_or(0) != 0xFF {
-                return None;
+        let mut best: Option<(u8, usize, u32)> = None;
+        for (i, b) in self.header.iter().enumerate() {
+            if let Some(mask) = &self.header_mask {
+                if mask.get(i).copied().unwrap_or(0) != 0xFF {
+                    continue;
+                }
+            }
+            let cost = commonness(*b);
+            // Strictly less, so ties keep the earliest byte and signatures
+            // with no clear winner behave exactly as before.
+            if best.map(|(_, _, c)| cost < c).unwrap_or(true) {
+                best = Some((*b, self.header_offset + i, cost));
             }
         }
-        self.header.first().map(|b| (*b, self.header_offset))
+        best.map(|(b, off, _)| (b, off))
+    }
+}
+
+/// How often a byte turns up in the places a carver scans. Lower is rarer and
+/// makes a better prefilter anchor.
+///
+/// A deliberately coarse model rather than a measured histogram: the two
+/// values that matter are the fill bytes, and those are the same on every
+/// medium. Zero is what a formatted drive's free space and every sparse or
+/// padded structure are made of; `0xFF` is erased NAND flash. Everything else
+/// is ordered only enough to break ties sensibly - printable ASCII is common in
+/// documents and metadata, and high bytes are the rarest in structured data.
+fn commonness(b: u8) -> u32 {
+    match b {
+        0x00 | 0xFF => 1000,
+        b' ' | b'\n' | b'\r' | b'\t' => 100,
+        0x20..=0x7E => 10,
+        0x01..=0x1F => 5,
+        _ => 1,
     }
 }
 
@@ -416,8 +457,37 @@ mod tests {
     #[test]
     fn prefilter_byte_reflects_the_header_offset() {
         let db = SignatureDb::builtin().unwrap();
-        assert_eq!(db.get("jpeg").unwrap().prefilter_byte(), Some((0xFF, 0)));
+        // MP4's header sits at offset 4 and is all printable ASCII, so the
+        // anchor is its first byte at that offset.
         assert_eq!(db.get("mp4").unwrap().prefilter_byte(), Some((b'f', 4)));
+    }
+
+    /// No signature may anchor on a fill byte when it has anything better.
+    ///
+    /// A zero or 0xFF anchor turns the prefilter into "check every byte" on a
+    /// formatted drive or erased flash - which is how the engine came to run at
+    /// 16 MiB/s on the quick-formatted fixture.
+    #[test]
+    fn no_signature_anchors_on_a_fill_byte_it_could_avoid() {
+        let db = SignatureDb::builtin().unwrap();
+        let mut bad = Vec::new();
+        for s in &db.signatures {
+            let Some((b, _)) = s.prefilter_byte() else { continue };
+            let has_alternative = s.header.iter().any(|x| *x != 0x00 && *x != 0xFF);
+            if (b == 0x00 || b == 0xFF) && has_alternative {
+                bad.push(format!("{} anchors on {b:#04x}", s.id));
+            }
+        }
+        assert!(bad.is_empty(), "fill-byte anchors: {bad:?}");
+    }
+
+    /// The three signatures that start with a fill byte move to a rarer one.
+    #[test]
+    fn signatures_starting_with_a_fill_byte_anchor_further_in() {
+        let db = SignatureDb::builtin().unwrap();
+        assert_eq!(db.get("jpeg").unwrap().prefilter_byte(), Some((0xD8, 1)));
+        assert_eq!(db.get("ico").unwrap().prefilter_byte(), Some((0x01, 2)));
+        assert_eq!(db.get("mpeg_ps").unwrap().prefilter_byte(), Some((0xBA, 3)));
     }
 
     #[test]
