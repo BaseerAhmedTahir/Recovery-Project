@@ -145,6 +145,48 @@ pub fn validate(d: &[u8]) -> Outcome {
         return Outcome::reject("only the ftyp box could be walked; not a media file");
     }
 
+    // A truncated H.264 file still has samples that can be checked, and how far
+    // they check out is the most useful number a truncated MP4 can report.
+    //
+    // Without this, an MP4 cut short anywhere inside mdat reported only the
+    // mdat box's own start - about a kilobyte in - however much intact media
+    // followed. That is correct as a floor and useless as a measure: a
+    // reassembler appending one correct cluster after another saw no progress
+    // at all, because the one number it could observe never moved.
+    if truncated_at.is_some() {
+        if let Some((body, end)) = moov {
+            match check_avc_samples(d, body, end) {
+                AvcCheck::Spliced { track, sample, offset } => {
+                    return evidence(
+                        Outcome::partial(
+                            offset,
+                            format!(
+                                "sample {sample} of H.264 track {track} does not divide into \
+                                 NAL units; the media data is spliced into something else there"
+                            ),
+                        )
+                        .with("spliced_after", offset)
+                        .with("bad_sample", sample),
+                    );
+                }
+                AvcCheck::Checked { samples, verified_to } if verified_to > 0 => {
+                    return evidence(
+                        Outcome::partial(
+                            verified_to,
+                            format!(
+                                "truncated: {samples} H.264 sample(s) intact, the last ending at \
+                                 {verified_to}"
+                            ),
+                        )
+                        .with("truncated", true)
+                        .with("avc_samples_checked", samples),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     if let Some(cut) = truncated_at {
         let why = if saw_moov && !saw_mdat {
             "truncated: the index is present but the media data is cut short"
@@ -195,7 +237,7 @@ pub fn validate(d: &[u8]) -> Outcome {
                     .with("bad_sample", sample),
                 );
             }
-            AvcCheck::Checked { samples } => {
+            AvcCheck::Checked { samples, .. } => {
                 return evidence(Outcome::valid(at).with("avc_samples_checked", samples));
             }
             AvcCheck::NotApplicable => {}
@@ -214,7 +256,14 @@ enum AvcCheck {
     /// sample can be checked against.
     NotApplicable,
     /// Every H.264 sample within reach divided cleanly into NAL units.
-    Checked { samples: u64 },
+    /// `verified_to` is the end of the furthest sample that did - how far the
+    /// H.264 media, not just the box headers, is known to be intact.
+    ///
+    /// Only H.264 samples are checked. Chunks of any other track interleaved
+    /// before `verified_to` - the audio, in most real files - were not looked
+    /// at, so the number says the video divides cleanly up to there, not that
+    /// every byte before it is right.
+    Checked { samples: u64, verified_to: u64 },
     /// This sample did not; `offset` is where it starts.
     Spliced { track: u64, sample: u64, offset: u64 },
 }
@@ -242,6 +291,7 @@ const MAX_SAMPLES: u64 = 2_000_000;
 fn check_avc_samples(d: &[u8], moov_body: usize, moov_end: usize) -> AvcCheck {
     let mut any = false;
     let mut samples_checked = 0u64;
+    let mut verified_to = 0u64;
 
     for (idx, (trak_body, trak_end)) in children(d, moov_body, moov_end, b"trak")
         .into_iter()
@@ -289,6 +339,7 @@ fn check_avc_samples(d: &[u8], moov_body: usize, moov_end: usize) -> AvcCheck {
                     return if any {
                         AvcCheck::Checked {
                             samples: samples_checked,
+                            verified_to,
                         }
                     } else {
                         AvcCheck::NotApplicable
@@ -302,9 +353,11 @@ fn check_avc_samples(d: &[u8], moov_body: usize, moov_end: usize) -> AvcCheck {
                     };
                 }
                 samples_checked += 1;
+                verified_to = verified_to.max(end);
                 if samples_checked >= MAX_SAMPLES {
                     return AvcCheck::Checked {
                         samples: samples_checked,
+                        verified_to,
                     };
                 }
                 pos = end;
@@ -315,6 +368,7 @@ fn check_avc_samples(d: &[u8], moov_body: usize, moov_end: usize) -> AvcCheck {
     if any {
         AvcCheck::Checked {
             samples: samples_checked,
+            verified_to,
         }
     } else {
         AvcCheck::NotApplicable
@@ -613,6 +667,42 @@ mod tests {
         let out = validate(&m);
         assert_eq!(out.status, Status::Partial, "{}", out.detail);
         assert_eq!(out.evidence_of("bad_sample"), Some("2"));
+    }
+
+    /// A reassembler measures progress by how far the validator verifies, so a
+    /// truncated H.264 file must report the samples it has, not just the start
+    /// of its mdat box.
+    #[test]
+    fn a_truncated_h264_file_reports_how_far_its_samples_verify() {
+        let (m, offsets) = avc_mp4(12, 3, 200);
+        // mdat precedes moov in this builder, so cutting inside mdat would cut
+        // away the index. Move moov to the front the way faststart does.
+        let moov_at = memchr::memmem::rfind(&m, b"moov").unwrap() - 4;
+        let moov = m[moov_at..].to_vec();
+        let ftyp_len = u32::from_be_bytes([m[0], m[1], m[2], m[3]]) as usize;
+        let shift = moov.len() as u64;
+        let mut fs = m[..ftyp_len].to_vec();
+        fs.extend_from_slice(&moov);
+        fs.extend_from_slice(&m[ftyp_len..moov_at]);
+        // Chunk offsets moved by the size of moov; patch them.
+        let stco = memchr::memmem::find(&fs, b"stco").unwrap() + 4 + 4 + 4;
+        for (k, o) in offsets.iter().enumerate() {
+            let at = stco + 4 * k;
+            fs[at..at + 4].copy_from_slice(&((o + shift) as u32).to_be_bytes());
+        }
+        let full = validate(&fs);
+        assert_eq!(full.status, Status::Valid, "{}", full.detail);
+
+        // Cut partway through sample 8.
+        let cut = (offsets[8] + shift) as usize + 100;
+        let out = validate(&fs[..cut]);
+        assert_eq!(out.status, Status::Partial, "{}", out.detail);
+        assert_eq!(
+            out.length,
+            offsets[8] + shift,
+            "should report the end of sample 7, the last one fully present"
+        );
+        assert_eq!(out.evidence_of("avc_samples_checked"), Some("8"));
     }
 
     /// No avcC, no check - there is no length-field width to parse with. This

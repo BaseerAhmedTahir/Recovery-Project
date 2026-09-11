@@ -64,7 +64,6 @@ pub fn validate(d: &[u8]) -> Outcome {
     let mut dims: Option<(u16, u16)> = None;
     let mut components = 0u8;
     let mut restarts = 0u64;
-    let mut restarts_out_of_order = 0u64;
     // From DRI, in MCUs; zero means the file declares no restart markers.
     let mut restart_interval = 0u64;
     // Sum of each component's sampling factors, from the frame header.
@@ -109,30 +108,14 @@ pub fn validate(d: &[u8]) -> Outcome {
                     );
                 }
                 let (w, h) = dims.unwrap_or((0, 0));
-                let mut out = Outcome::valid(len)
+                // Reaching EOI means every restart marker was in sequence: an
+                // out-of-sequence one ends the scan where it occurs.
+                return Outcome::valid(len)
                     .with("width", w)
                     .with("height", h)
                     .with("components", components)
                     .with("segments", segments)
                     .with("restart_markers", restarts);
-                if restarts_out_of_order > 0 {
-                    // Restart markers cycle D0..D7 strictly. Out-of-sequence
-                    // ones mean the entropy data is spliced - which is exactly
-                    // what a wrongly reassembled fragment looks like.
-                    out = Outcome::partial(
-                        len,
-                        format!(
-                            "{restarts_out_of_order} restart marker(s) out of sequence; \
-                             the entropy data is probably spliced from the wrong fragments"
-                        ),
-                    )
-                    .with("width", w)
-                    .with("height", h)
-                    .with("components", components)
-                    .with("restart_markers", restarts)
-                    .with("restarts_out_of_order", restarts_out_of_order);
-                }
-                return out;
             }
             TEM | RST_FIRST..=RST_LAST => continue,
             SOI => {
@@ -265,10 +248,31 @@ pub fn validate(d: &[u8]) -> Outcome {
                     // Fill byte; step one so the next FF is still examined.
                     0xFF => k += 1,
                     b @ RST_FIRST..=RST_LAST => {
-                        restarts += 1;
                         if b - RST_FIRST != expect {
-                            restarts_out_of_order += 1;
+                            // Restart markers cycle D0..D7 strictly within a
+                            // scan, so one out of sequence is not a quirk - it
+                            // is data from somewhere else. Stop at the last one
+                            // that was in order.
+                            //
+                            // This used to be counted and acted on only at EOI,
+                            // while the marker still advanced `verified_to`.
+                            // For a whole file that is harmless: the verdict is
+                            // downgraded in the end. For reassembly it was fatal,
+                            // because `verified_to` is the progress signal - a
+                            // cluster of another JPEG's entropy data pushed it
+                            // forward whatever its restart phase, and would have
+                            // been accepted as the next fragment every time.
+                            // Now it is accepted only when its phase happens to
+                            // match, one time in eight.
+                            return out_of_sequence(
+                                verified_to,
+                                expect,
+                                b - RST_FIRST,
+                                restarts,
+                                dims,
+                            );
                         }
+                        restarts += 1;
                         expect = (b - RST_FIRST + 1) % 8;
                         k += 2;
                         // A restart marker is a real structural landmark, so
@@ -311,6 +315,30 @@ fn spliced(
     .with("height", h)
     .with("restart_markers", restarts)
     .with("restart_interval", interval)
+    .with("spliced_after", last_good)
+}
+
+/// A restart marker arrived out of its strict D0..D7 cycle.
+fn out_of_sequence(
+    last_good: usize,
+    expected: u8,
+    got: u8,
+    restarts: u64,
+    dims: Option<(u16, u16)>,
+) -> Outcome {
+    let (w, h) = dims.unwrap_or((0, 0));
+    Outcome::partial(
+        last_good as u64,
+        format!(
+            "restart marker RST{got} where RST{expected} was due; restart markers cycle \
+             strictly, so the entropy data is spliced from somewhere else after the last \
+             in-sequence marker"
+        ),
+    )
+    .with("width", w)
+    .with("height", h)
+    .with("restart_markers", restarts)
+    .with("restarts_out_of_order", 1)
     .with("spliced_after", last_good)
 }
 
@@ -483,13 +511,19 @@ mod tests {
     }
 
     /// The signal that matters for Milestone 4: restart markers that skip are
-    /// what a wrongly reassembled fragment looks like from the outside.
+    /// what a wrongly reassembled fragment looks like from the outside, and the
+    /// scan must stop at the last one in sequence rather than walking on.
     #[test]
-    fn out_of_sequence_restart_markers_downgrade_to_partial() {
+    fn out_of_sequence_restart_markers_stop_the_scan_at_the_splice() {
+        let head = minimal(&[]);
+        let scan_start = head.len() - 2; // before the EOI minimal() appends
         let e = vec![0x11, 0xFF, 0xD0, 0x22, 0xFF, 0xD5, 0x33];
         let out = validate(&minimal(&e));
-        assert_eq!(out.status, Status::Partial);
+        assert_eq!(out.status, Status::Partial, "{}", out.detail);
         assert_eq!(out.evidence_of("restarts_out_of_order"), Some("1"));
+        // The last in-sequence marker is the RST0, three bytes into the scan.
+        assert_eq!(out.length, (scan_start + 3) as u64);
+        assert!(!out.length_established);
     }
 
     #[test]
