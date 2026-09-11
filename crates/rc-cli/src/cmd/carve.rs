@@ -75,6 +75,16 @@ pub struct Args {
     /// Show the first N candidates.
     #[arg(long, default_value_t = 20)]
     show: usize,
+
+    /// Read an image file with the operating system's page cache bypassed.
+    ///
+    /// Without this, a carve of an image that fits in RAM reports the speed of
+    /// memory rather than of the disk, and a second run is faster than the
+    /// first for no reason related to the engine. With it, the MiB/s figure
+    /// describes the storage the image lives on. Raw devices are always read
+    /// unbuffered, so this changes nothing for them.
+    #[arg(long)]
+    unbuffered: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -108,7 +118,11 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
         None => SignatureDb::builtin()?,
     };
 
-    let device = rc_device::open(&args.source, None)?;
+    let device = if args.unbuffered {
+        rc_device::open_unbuffered(&args.source, None)?
+    } else {
+        rc_device::open(&args.source, None)?
+    };
     let total = device.total_sectors() * device.sector_size().get() as u64;
     let end = args.end.unwrap_or(total).min(total);
     anyhow::ensure!(
@@ -193,7 +207,11 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
             bytes_scanned: s.bytes_scanned,
             elapsed_secs: s.elapsed.as_secs_f64(),
             mib_per_sec: s.mib_per_sec(),
-            cache_warning: s.cache_warning().map(|w| w.to_string()),
+            cache_warning: if args.unbuffered {
+                None
+            } else {
+                s.cache_warning().map(|w| w.to_string())
+            },
             prefilter: s.strategy,
             threads: s.threads,
             signatures: s.signatures,
@@ -222,8 +240,13 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
         s.strategy,
         s.signatures
     );
-    if let Some(w) = s.cache_warning() {
-        println!("note: {w}");
+    if args.unbuffered {
+        println!(
+            "note: read unbuffered - this figure describes the storage device, not \
+             the page cache"
+        );
+    } else if let Some(w) = s.cache_warning() {
+        println!("note: {w} (pass --unbuffered to measure the disk instead)");
     }
     if cfg!(debug_assertions) {
         // The same trap that made the prefilter threshold wrong twice: a debug

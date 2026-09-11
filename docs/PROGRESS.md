@@ -292,6 +292,7 @@ Prerequisites (all of which gate the carving grade being meaningful):
 | Carve 20+ formats from a quick-formatted fixture | done: 38 located, 22 recovered byte-exactly, from a real quick-formatted NTFS volume |
 | Disk-backed candidate index (`rc-index`) | done: 10x the rows costs 1.28x the peak, against a 2.0x bar |
 | Peak RSS under 2 GB | done: 25 MiB at 500,000 candidates |
+| Report MB/s | done: 336 MiB/s unbuffered from NVMe (median of 5), CPU-bound, with the disk's 1256 MiB/s ceiling measured alongside |
 | Throughput measurable | see below |
 | RSS ceiling testable | see below |
 
@@ -532,6 +533,58 @@ Two validators were written *because* of this measurement rather than from the
 format list: `ico` (3782 of 4060 candidates before it existed) and `pe` (50, in
 a fixture containing no executables).
 
+### Throughput, measured
+
+Milestone 3 says "report MB/s". Every figure before this came from a 512 MiB
+fixture that fits in RAM, so every one measured memory bandwidth. Two changes
+made the number mean something:
+
+* **`rc_device::open_unbuffered`** opens an image with `FILE_FLAG_NO_BUFFERING`
+  (Windows) or `O_DIRECT` (Linux), and `rc carve --unbuffered` uses it. Its
+  read path is checked against the buffered one across 606 combinations of
+  offset, length and buffer alignment - and separately checked to be *really*
+  uncached, by confirming the OS rejects a misaligned read on the handle, since
+  every equivalence test would pass identically if the flag were ignored.
+* **A four-tier benchmark**, `tests/throughput.rs`, median of five runs:
+
+| Tier | MiB/s | Range |
+|---|---|---|
+| 0. raw unbuffered read, no scanning | **1256** | 1237-1262 |
+| 1. engine: prefilter + header match, one thread, no I/O | 189 | |
+| 2. full scan, from the page cache | 349 | 333-377 |
+| 3. **full scan, unbuffered** | **336** | 315-358 |
+
+**The scan is CPU-bound on this NVMe drive**: it consumes 27% of what the disk
+delivers. On a USB stick or SD card at tens of MB/s it will be I/O-bound
+instead. The benchmark decides which by comparing the scan against the raw-read
+ceiling, not by assertion.
+
+**It asserts correctness, not speed.** Throughput is machine-dependent and a
+threshold that passes here fails on a slower runner and teaches everyone to
+ignore it. What it asserts is that the unbuffered scan finds exactly what the
+buffered scan finds.
+
+Three things the benchmark found that nothing else would have:
+
+1. **The engine ran at 16 MiB/s**, because `ico` and `mpeg_ps` both begin with
+   a zero and the fixture is 98.6% zeros - 532 million full header comparisons
+   in a 537 MB scan. Signatures now anchor on their rarest byte; prefilter hits
+   fell to 543,206, the engine rose to ~200 MiB/s, and recovery was unchanged
+   at 228 of 228. This matters beyond the benchmark: the free space of a
+   formatted drive is zeros and erased flash is `0xFF` - the start of every
+   JPEG - so the media this tool suits best were exactly where the prefilter
+   degraded to checking every byte.
+2. **A single run is not a benchmark.** Two consecutive runs reported the
+   cached scan at 509 and then 332 MiB/s, and a verdict computed from one of
+   them flipped on noise alone. Hence medians with ranges.
+3. **The workers scale poorly** - eight threads reach about 1.8 times the
+   one-thread rate. On fast storage that is now the limit. Not required by
+   Milestone 3; recorded in LIMITATIONS.
+
+Along the way, `scan.rs` stated the scan was "I/O-bound on any real medium" and
+the benchmark's own first version blamed a queue depth of one without
+measuring it. Both were wrong and both are corrected in place.
+
 ### Format coverage: 38 located, 22 recovered
 
 Milestone 3 asks for 20+ formats. `testdata/corpus/formats.py` builds one
@@ -653,7 +706,8 @@ test therefore reports:
 
 **Still open for Milestone 3:**
 
-* **A throughput number that describes something.** See below.
+* ~~A throughput number that describes something.~~ Done - see "Throughput,
+  measured" below.
 * **Sizing the remaining 16 formats.** Each needs decoding rather than a header
   read; see the format-coverage section. None is required by Milestone 3, and
   the number is reported rather than hidden.

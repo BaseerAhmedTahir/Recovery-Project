@@ -433,12 +433,16 @@ targets. Those are done; the list above is what is genuinely left.
   scanner's own buffers are bounded - block buffers are recycled through a
   channel and the validation buffer is reused - but the candidate list is held
   in memory and grows with the number of hits, which is what `rc-index` is for.
-- **Carving throughput has never been measured against a device.** The 512 MiB
-  fixture is served from the page cache, and `ScanStats::cache_warning` says so
-  rather than printing the figure as a device speed. The scan is I/O-bound on
-  any real medium anyway - one thread prefilters at roughly 1 GB/s against a
-  USB stick's 30 MB/s - so the number that matters will come from the hardware
-  smoke path, not from a fixture.
+- **Carving throughput is measured on one machine's NVMe only.** The
+  benchmark reads the fixture unbuffered, so it describes a real disk rather
+  than the page cache - 336 MiB/s, CPU-bound, against a raw read ceiling of
+  1256 MiB/s - but it has never been run against a USB stick, an SD card or a
+  spinning disk, where the balance should flip to I/O-bound. The earlier claim
+  that the scan was "I/O-bound on any real medium" was wrong and is corrected.
+- **The scan workers scale poorly.** Eight threads reach roughly 1.8 times the
+  one-thread rate. On storage fast enough to outrun the engine, that - not the
+  disk - is the limit. The shared block channel is the first suspect; it is not
+  investigated yet.
 - **The independent corpus is not in the disk images.** ImageMagick and ffmpeg
   now supply real files for all eight formats the generated corpus could not
   vouch for, but those samples are validated as bytes rather than written into

@@ -24,13 +24,43 @@
 //! SPEC.md section 5.5 asks for that shape, and it is the right one - but
 //! not for the reason it looks like.
 //!
-//! **The scan is I/O-bound, not CPU-bound, on any real medium.** One thread
-//! prefilters at roughly 1 GB/s (see `prefilter`), while a USB stick delivers
-//! 30 MB/s and a good NVMe drive 3 GB/s. The workers exist so the reader never
-//! waits, not to make matching faster; adding threads past that buys nothing
-//! and the throughput figure will show it. Any MB/s number this produces
-//! describes the device, or on a cached fixture the page cache, and
-//! [`ScanStats::cache_warning`] says which.
+//! **Whether the scan is I/O-bound depends on the storage, and two earlier
+//! versions of this comment were wrong about it.** The first claimed the scan
+//! was I/O-bound "on any real medium" because one thread prefilters at roughly
+//! 1 GB/s. The second, written from a single benchmark run, said the disk cost
+//! about a quarter of the throughput. Measured properly - median of five runs,
+//! against a raw-read baseline, in `tests/throughput.rs` - on this machine's
+//! NVMe drive:
+//!
+//! | tier | MiB/s |
+//! |---|---|
+//! | raw unbuffered read, no scanning | 1256 |
+//! | full scan, unbuffered | 336 |
+//! | full scan, from the page cache | 349 |
+//! | prefilter + header match, one thread | 189 |
+//!
+//! So on fast storage the scan is **CPU-bound**: it consumes 27% of what the
+//! disk delivers, and reading from the disk costs almost nothing over reading
+//! from RAM. Against a USB stick or an SD card at tens of MB/s the engine is
+//! far ahead and the scan is I/O-bound instead. The 1 GB/s figure was the
+//! prefilter alone on random bytes; header matching on a real image is what
+//! brings it down.
+//!
+//! Two consequences worth stating plainly:
+//!
+//! * **The workers scale poorly.** Eight threads scan at about 1.8 times the
+//!   one-thread rate. Something is serialising them - the shared block channel
+//!   is the first suspect - and on fast storage that is now the limit. Not a
+//!   Milestone 3 requirement, and recorded rather than hidden.
+//! * **The reader is not the problem.** At a queue depth of one it still pulls
+//!   1.26 GB/s from the drive, nearly four times what the workers use. An
+//!   earlier version of the benchmark printed a note blaming the queue depth,
+//!   unconditionally and without measuring it; the raw-read tier is what showed
+//!   that note was wrong.
+//!
+//! Any MB/s figure this produces describes the device, or on a cached fixture
+//! the page cache; [`ScanStats::cache_warning`] says which, and `rc carve
+//! --unbuffered` removes the ambiguity.
 //!
 //! # Bounded memory
 //!

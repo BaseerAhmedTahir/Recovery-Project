@@ -62,6 +62,20 @@ pub fn open(path: &Path, sector_size: Option<SectorSize>) -> Result<Box<dyn Read
     backend::open(path, sector_size)
 }
 
+/// Open a device or image file read-only, bypassing the operating system's
+/// page cache.
+///
+/// For an image file this uses `FILE_FLAG_NO_BUFFERING` / `O_DIRECT`, so reads
+/// measure the disk the image lives on rather than RAM - which is the only way
+/// a throughput figure from a fixture describes anything. Raw devices are
+/// already unbuffered and open exactly as with [`open`].
+pub fn open_unbuffered(
+    path: &Path,
+    sector_size: Option<SectorSize>,
+) -> Result<Box<dyn ReadOnlyDevice>> {
+    backend::open_unbuffered(path, sector_size)
+}
+
 /// List the machine's block devices.
 ///
 /// This performs metadata queries only and never reads device contents, so it

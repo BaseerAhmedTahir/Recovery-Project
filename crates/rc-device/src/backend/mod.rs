@@ -38,6 +38,21 @@ pub fn looks_like_image(path: &Path) -> bool {
 }
 
 /// Open any supported target read-only.
+/// Open an image file with the page cache bypassed.
+///
+/// Only image files: a raw device is already opened unbuffered by its platform
+/// backend, so there is no second mode to choose for one.
+pub fn open_unbuffered(
+    path: &Path,
+    sector_size: Option<SectorSize>,
+) -> Result<Box<dyn ReadOnlyDevice>> {
+    if looks_like_image(path) {
+        return Ok(Box::new(file::FileDevice::open_unbuffered(path, sector_size)?));
+    }
+    // A raw device is unbuffered already; opening it normally is the same thing.
+    open(path, sector_size)
+}
+
 pub fn open(path: &Path, sector_size: Option<SectorSize>) -> Result<Box<dyn ReadOnlyDevice>> {
     if looks_like_image(path) {
         return Ok(Box::new(file::FileDevice::open(path, sector_size)?));
