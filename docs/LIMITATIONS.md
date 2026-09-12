@@ -240,11 +240,13 @@ compressor, which is more coverage than a bit-identical copy would give.
 
 ### 3.1 Not yet implemented
 
-Milestones 1 and 2 deliver device access, imaging, partition discovery and
-deleted-entry recovery for NTFS, FAT12/16/32 and exFAT. There is still **no**
-signature carving, **no** fragment reassembly, **no** scoring and **no** mobile
-support. `rc` has five subcommands: `devices`, `image`, `verify`, `smoke`,
-`list-deleted`.
+Milestones 1 to 4 deliver device access, imaging, partition discovery,
+deleted-entry recovery for NTFS, FAT12/16/32 and exFAT, signature carving with
+validators, and fragment reassembly. There is still **no** scoring engine, **no**
+session resume, **no** preview and **no** mobile support. Reassembly is a
+library (`rc-bifrag`) that the CLI does not yet expose: `rc` has five
+subcommands: `devices`, `image`, `verify`, `smoke`, `list-deleted`, plus
+`carve`.
 
 **ext4, APFS and HFS+ are not implemented.** `rc list-deleted` says so
 explicitly rather than reporting zero deleted files, which would be a lie.
@@ -381,45 +383,48 @@ hand-built PE vectors have no overlay because I would not have thought to add
 one. Bounding it needs content heuristics and belongs with `rc-bifrag` in
 Milestone 4.
 
-### 3.6b A fragmented file can still validate, for two formats in two cases
+### 3.6b A fragmented file can still validate, in the modes that are not decoded
 
-Until Milestone 4, the carver reported fragmented files as complete. Carving
-the fragmented fixture contiguously recovered none of its four files - which
-is expected - but three of them came back `Valid` with an established length:
-two JPEGs at 150,316 and 131,085 bytes that are really 84,780 and 65,549, and
-an MP4 at exactly the right length with the wrong bytes. A user would have been
-handed corrupt files marked GREEN.
+Until Milestone 4, the carver reported fragmented files as complete. On the
+fragmented fixtures every JPEG came back `Valid` with an established length and
+the wrong bytes:
 
-The JPEGs validated because the gaps between their fragments were filled with
-a constant byte containing no `0xFF`, so no marker ever appeared to end the
-entropy-coded data. The MP4 validated because all three of its top-level box
-headers sat in the first 4 KiB fragment, and the validator summed their
-declared sizes without reading the media.
+| File | Restart interval | Reported | Really |
+|---|---|---|---|
+| large_b.jpg | every 50 MCUs | Valid, 198,254 bytes | 99,950 |
+| large_f.jpg | none | Valid, 267,933 bytes | 136,861 |
+| large_a.jpg | every 4 MCUs | Valid, 77,824 bytes | 61,440 |
 
-Both are now caught, by checks that come from the formats rather than from the
-fixture:
+A user would have been handed corrupt files marked GREEN.
 
-* **JPEG with a restart interval.** DRI declares how many MCUs lie between
-  restart markers, which caps how many bytes can: an 8x8 block cannot exceed
-  512 bytes of entropy-coded data even with worst-case stuffing. Real files
-  run 42-116 bytes between markers against a ceiling of 2048; a 32 KiB gap is
-  far outside it.
-* **H.264 MP4 with an `avcC` configuration.** Each sample must divide exactly
-  into length-prefixed NAL units. ffmpeg's output tiles with no failures; data
-  from elsewhere almost never does.
+The reason is worth stating plainly, because it is not obvious: **markers
+cannot see insertion.** When a file is split, the filler sits *in the middle*
+of its entropy stream and the file's own data continues on the far side, so the
+next restart marker carries exactly the phase the sequence expects. Nothing in
+the marker sequence is out of order, and nothing is missing. The byte bound
+that catches a long gap is the format's worst case (512 bytes per block, versus
+10-30 in real data), so at an interval of 50 MCUs it allows 153,600 bytes of
+anything.
 
-The two cases that remain:
+Only decoding closes it, and Milestone 4 decodes: a sequential Huffman scan is
+Huffman-decoded and the MCUs between restart markers counted
+(`validate/jpeg_entropy.rs`). All three files above are now caught at the byte
+where the insertion begins.
 
-1. **A JPEG without a restart interval.** Most real photos have none. With no
-   interval there is no bound, and a gap of constant fill still passes. A gap
-   of real data from another file is still caught - random bytes contain
-   `0xFF` about every 256 bytes and almost never follow it with a legal marker
-   - but only actual Huffman decoding closes the constant-fill case.
+What remains uncovered:
+
+1. **Progressive, lossless and arithmetic-coded JPEG are not decoded.** They
+   use a different entropy structure - spectral bands across passes,
+   difference coding, a different coder - and fall back to the byte-level
+   marker checks, which insertion defeats. 2 of the 12 foreign JPEGs in the
+   independent corpus are progressive. Cameras write baseline; web images are
+   often progressive.
 2. **An MP4 that is not H.264, or that claims `avc1` without `avcC`.** There is
-   no sample structure to check. This project's own corpus generator writes
-   exactly that: its MP4s declare `avc1` and carry random samples with no
-   `avcC`, which a real decoder would reject. That is a shortcut in the
-   generator, not a property of real video.
+   no sample structure to check, so a spliced file can still add up.
+3. **Any format whose payload carries no internal landmark**, which is the same
+   gap seen from the other side: a PNG written as one huge IDAT chunk has no
+   checksum until its end, and an MP4 whose `moov` follows its `mdat` has no
+   sample table to check against while reading forwards.
 
 ### 3.7 Twenty-eight of the 44 signatures have a validator; 16 do not
 
@@ -450,6 +455,61 @@ Earlier drafts of this section named ICO, PE, GIF, TIFF, 7z and RAR as the next
 targets. Those are done; the list above is what is genuinely left.
 
 ---
+
+### 3.8 Fragment reassembly recovers some fragmented files, not most
+
+`rc-bifrag` (Milestone 4) stitches a file back together from fragments that
+ascend on disk, judging every candidate cluster by the format's validator. What
+it actually recovers, byte-exactly, on the two fragmented fixtures - measured
+from each file's true header, against layouts recovered from the images rather
+than assumed:
+
+| Fixture | Recovered | Contiguous-only baseline |
+|---|---|---|
+| `fragmented-jpeg` (constant filler, every gap 32 KiB) | **4 of 6** | 0 of 6 |
+| `fragmented-hard` (gaps hold same-encoder media, 4 KiB to 1 MiB) | **2 of 6** | 0 of 6 |
+
+The four ways it fails:
+
+1. **An MP4 whose `moov` box follows its `mdat`.** Reading forwards from the
+   header there is no index, so no cluster can be verified against anything and
+   the search has nothing to work with. This is what phone and camera
+   recorders write, because they cannot know the index until recording stops.
+   Both fixtures contain one and neither recovers it. Closing this needs
+   format-driven pointer following (SPEC.md 5.6.4): find the `moov`
+   separately, then place samples by their recorded chunk offsets.
+2. **Sparse landmarks and cost together, which stop the PNG.** ImageMagick
+   writes this 916 KiB image as 28 IDAT chunks of 32 KiB (measured, not
+   assumed: an earlier note here said 8 KiB from libpng's documented default,
+   which is not what came out). A checksum only every eight clusters means a
+   fragment boundary inside a chunk cannot be confirmed until the whole chunk
+   is assembled, so the search must guess a gap right before anything tells it
+   so. Each wrong guess costs a full re-validation, because every candidate
+   re-validates the whole file so far - the work is (file size) x (candidates
+   tried). 4 GiB of validation reaches 885,305 of 916,513 bytes on the easy
+   fixture and does not cross the first gap on the hard one. A validator that
+   could resume from its last landmark instead of restarting at byte zero
+   would change the arithmetic; it is not implemented.
+3. **Decoys that pass the junction check by chance.** For a decoy cluster to
+   be accepted, its own restart interval must end where ours is due and its
+   restart phase must match: reasoning from the structure, roughly one
+   candidate in 32 at an interval of 4 MCUs. That rate is an estimate from the
+   two conditions, not a measurement. What is measured is the consequence: with
+   gaps up to 1 MiB there are hundreds of candidates per boundary, a false one
+   is usually met before the true one, and `large_a.jpg` on the hard fixture
+   spends its whole budget after placing 2 of its 7 pieces. Ranking candidates
+   by DC continuity - how well the decoded DC coefficients continue the image
+   above them - rather than taking the first that fits, is the known next
+   step.
+4. **Fragments that are not in ascending order.** The whole method assumes they
+   are. FAT allocates forwards and all 12 recorded layouts in the fixtures
+   ascend, but a file extended long after it was written, or one on a heavily
+   churned NTFS volume, can have a fragment before its first. Not handled, and
+   not detected either: such a file simply fails to reassemble.
+
+What holds regardless, and is asserted by the test: **no file that fails to
+come back byte-exactly is reported `Valid`.** A wrong file labelled complete is
+the outcome that matters most, because it is the one a user would keep.
 
 ## 4. Test-coverage gaps
 

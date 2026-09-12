@@ -893,7 +893,8 @@ def ff_mp4(seed, faststart, seconds=8):
 #   large_c  H.264, moov before mdat - the index is in the first fragment
 #   large_e  H.264, moov after mdat - the index is in the last fragment,
 #            which is how recorders write files
-#   large_d  PNG as libpng writes it, IDAT in 8 KiB chunks
+#   large_d  PNG as libpng writes it: 28 IDAT chunks of 32 KiB, so a
+#            checksum only every eight clusters
 FRAG_CORPUS = [
     ("frag/large_a.jpg", "jpeg", lambda: im_jpeg(1024, 768, 9001, 4)),
     ("frag/large_b.jpg", "jpeg", lambda: im_jpeg(800, 600, 9002, 50)),

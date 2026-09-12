@@ -1,9 +1,60 @@
 # PROGRESS
 
-Running status per SPEC.md section 9. Last updated 2026-09-11.
+Running status per SPEC.md section 9. Last updated 2026-09-12.
 
-**Current state: Milestones 1, 2 and 3 complete and verified on Windows.
-Milestone 4 not started - stopping here to report, per the working agreement.**
+**Current state: Milestones 1, 2, 3 and 4 complete and verified on Windows.
+Stopping here to report, per the working agreement.**
+
+## Milestone 4 acceptance
+
+> `rc-bifrag` reassembly. Correctly reassemble the fragmented-JPEG and
+> fragmented-MP4 fixtures; measurable improvement over contiguous-only
+> baseline.
+
+| Criterion | Result |
+|---|---|
+| Reassemble the fragmented-JPEG fixture | **All 3 JPEGs recovered byte-exactly** - 5, 4 and 5 fragments - in 49 to 64 validator calls each, no backtracking |
+| Reassemble the fragmented-MP4 fixture | **The MP4 whose index precedes its media: recovered**, 9 fragments, 192 calls. The one whose `moov` follows its `mdat` is not, and cannot be by this method |
+| Measurable improvement over contiguous-only | **0 to 4 of 6** on the easy fixture, **0 to 2 of 6** on the hard one; contiguous carving recovers none of the 12 |
+
+Both fixtures are built from ImageMagick and ffmpeg rather than this
+repository's own encoders, and graded against fragment layouts recovered from
+the images by content hash rather than assumed from the method. The harder of
+the two fills every gap with media from the same encoders at the same settings
+- the same camera, in effect - and varies gaps from one cluster to 256.
+
+| Fixture | Recovered | What failed |
+|---|---|---|
+| `fragmented-jpeg` (constant filler, gaps all 32 KiB) | 4 of 6 | the 916 KiB PNG (cost), the MP4 whose `moov` follows its `mdat` |
+| `fragmented-hard` (same-encoder decoys, gaps 4 KiB to 1 MiB) | 2 of 6 | as above, plus the PNG on its first gap and one JPEG whose decoys aligned by chance |
+
+The result that matters as much as the count: **no file that failed to come
+back byte-exactly is reported `Valid`**, and the test asserts it. Before
+Milestone 4's entropy decoder three fragmented JPEGs were reported complete
+with filler inside them, because inserting data leaves a restart-marker
+sequence intact and only decoding can see it. `docs/LIMITATIONS.md` sections
+3.6b and 3.8 carry the full picture, including the four ways reassembly still
+fails and what each would take to close.
+
+Cost, since benchmarks are part of the definition of done for this milestone:
+a recovered file costs 49 to 515 validator calls and under a second. A failed
+one costs its whole budget - 4 GiB of validation, 2 to 36 seconds - because
+every call re-validates the file from byte zero. A validator that could resume
+from its last landmark is the fix, and is not implemented.
+
+Scanning did not pay for the entropy decoder. The same benchmark on the same
+fixture now reads 446 MiB/s unbuffered (median of 5, range 394-458) against the
+336 recorded at Milestone 3 - but the raw-read ceiling also read higher this
+session, 1421 MiB/s against 1256, so this is machine state as much as code. The
+honest statement is that adding Huffman decoding to the JPEG validator did not
+cost measurable scanner throughput, not that it gained any.
+
+418 tests across 27 binaries in the workspace, all passing; fmt, clippy
+`-D warnings` across the workspace, and the no-network dependency audit clean.
+
+## Milestone 3 acceptance
+
+> `rc-carve` signature engine + validators, `rc-index`, throughput benchmark.
 
 | Milestone 3 criterion | Result |
 |---|---|
@@ -12,15 +63,15 @@ Milestone 4 not started - stopping here to report, per the working agreement.**
 | Report MB/s | **336 MiB/s** unbuffered from NVMe, median of 5; CPU-bound against a measured 1256 MiB/s disk ceiling |
 | Peak RSS < 2 GB | **25 MiB** at 500,000 candidates; 10x the rows costs 1.28x the peak, and a control proves the test can fail |
 
-403 tests across the workspace, clippy clean with `-D warnings`. The hardware
-sector-read path that was the last Milestone 1 gap was cleared on 2026-09-06
-against a real SD card; `docs/LIMITATIONS.md` section 1.1 has the output.
+The hardware sector-read path that was the last Milestone 1 gap was cleared on
+2026-09-06 against a real SD card; `docs/LIMITATIONS.md` section 1.1 has the
+output.
 
-What is **not** covered, so it is not mistaken for done: fragmented files
-(Milestone 4 - contiguous-only carving should recover none of
-`fragmented-jpeg.img`), 16 formats the carver can locate but not size,
-throughput on anything slower than NVMe, and worker scaling, which reaches only
-about 1.8x at eight threads.
+What is **not** covered, so it is not mistaken for done: 16 formats the carver
+can locate but not size, throughput on anything slower than NVMe, worker
+scaling (about 1.8x at eight threads), progressive JPEG entropy decoding, MP4s
+whose index follows their media, and the reassembly cost model - see
+`docs/LIMITATIONS.md` sections 3.6b, 3.7 and 3.8.
 
 ---
 
