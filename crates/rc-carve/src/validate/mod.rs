@@ -26,6 +26,7 @@ pub mod bmp;
 pub mod gif;
 pub mod ico;
 pub mod jpeg;
+mod jpeg_entropy;
 pub mod mp4;
 pub mod pdf;
 pub mod pe;

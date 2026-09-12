@@ -12,11 +12,14 @@
 //! lengths must land exactly on the next `FF`. A run of random bytes stops
 //! chaining almost immediately.
 //!
-//! Note what this validator does *not* do: it does not Huffman-decode the
-//! entropy-coded data. Decode-until-failure belongs to `rc-bifrag`
-//! (SPEC.md section 5.6 item 5), where the point is to find a fragment
-//! boundary rather than to accept or reject a candidate.
+//! The marker walk is only half of it. Markers cannot see data *inserted* into
+//! the entropy stream, which is what a fragment boundary is, so a sequential
+//! JPEG's scan is also Huffman-decoded - SPEC.md section 5.6 item 5 - by
+//! [`super::jpeg_entropy`], which counts the MCUs between restart markers.
+//! Progressive, lossless and arithmetic-coded frames are not decoded, and for
+//! those the byte-level checks below are all there is.
 
+use super::jpeg_entropy::{self, Component, Frame, ScanComponent, ScanResult, Tables};
 use super::{be16, Outcome};
 
 // Markers that stand alone: no length field follows.
@@ -29,6 +32,9 @@ const RST_LAST: u8 = 0xD7;
 
 /// Define Restart Interval: declares how many MCUs lie between restart markers.
 const DRI: u8 = 0xDD;
+
+/// Define Huffman Table.
+const DHT: u8 = 0xC4;
 
 /// The most entropy-coded bytes one 8x8 block can occupy.
 ///
@@ -69,6 +75,15 @@ pub fn validate(d: &[u8]) -> Outcome {
     // Sum of each component's sampling factors, from the frame header.
     let mut blocks_per_mcu = 1u64;
     let mut segments = 0u64;
+    // Everything the entropy decoder needs: the Huffman tables in force, the
+    // frame header, and (below, per scan) the scan header.
+    let mut tables = Tables::default();
+    let mut frame: Option<Frame> = None;
+    // How many scans were decoded rather than merely walked. Evidence: a file
+    // whose entropy data was decoded is vouched for far more strongly than one
+    // whose markers merely chained.
+    let mut decoded_scans = 0u64;
+    let mut decoded_mcus = 0u64;
     // The furthest point the structure justifies: the end of the last segment
     // walked, or the last restart marker inside the scan. Reporting `d.len()`
     // instead would report the caller's buffer size, which for a carve is the
@@ -115,7 +130,13 @@ pub fn validate(d: &[u8]) -> Outcome {
                     .with("height", h)
                     .with("components", components)
                     .with("segments", segments)
-                    .with("restart_markers", restarts);
+                    .with("restart_markers", restarts)
+                    // A file whose entropy data decoded to exactly the MCUs its
+                    // frame calls for is vouched for far more strongly than one
+                    // whose markers merely chained, and scoring should be able
+                    // to tell the two apart.
+                    .with("scans_decoded", decoded_scans)
+                    .with("mcus_decoded", decoded_mcus);
             }
             TEM | RST_FIRST..=RST_LAST => continue,
             SOI => {
@@ -158,6 +179,33 @@ pub fn validate(d: &[u8]) -> Outcome {
             restart_interval = be16(d, i + 2).unwrap_or(0) as u64;
         }
 
+        if marker == DHT {
+            // One segment can define several tables, each a class and id, then
+            // sixteen code-length counts, then that many values.
+            let mut at = i + 2;
+            while at < seg_end {
+                let tc_th = d[at];
+                let (class, id) = (tc_th >> 4, (tc_th & 0x0F) as usize);
+                let counts_at = at + 1;
+                if class > 1 || id > 3 || counts_at + 16 > seg_end {
+                    break;
+                }
+                let mut counts = [0u8; 16];
+                counts.copy_from_slice(&d[counts_at..counts_at + 16]);
+                let n: usize = counts.iter().map(|&c| c as usize).sum();
+                let values_at = counts_at + 16;
+                if values_at + n > seg_end {
+                    break;
+                }
+                let table = jpeg_entropy::Huffman::new(&counts, &d[values_at..values_at + n]);
+                match (class, table) {
+                    (0, t) => tables.dc[id] = t,
+                    (_, t) => tables.ac[id] = t,
+                }
+                at = values_at + n;
+            }
+        }
+
         if is_sof(marker) {
             saw_sof = true;
             // SOF payload: precision(1) height(2) width(2) components(1), then
@@ -187,13 +235,92 @@ pub fn validate(d: &[u8]) -> Outcome {
                     ));
                 }
                 dims = Some((w, h));
+                frame = Some(Frame {
+                    precision: d.get(i + 2).copied().unwrap_or(8),
+                    width: w,
+                    height: h,
+                    components: (0..components as usize)
+                        .filter_map(|c| {
+                            let id = d.get(i + 8 + 3 * c).copied()?;
+                            let s = d.get(i + 9 + 3 * c).copied()?;
+                            Some(Component {
+                                id,
+                                h: s >> 4,
+                                v: s & 0x0F,
+                            })
+                        })
+                        .collect(),
+                    // Only these two are Huffman-coded sequential frames. C2 is
+                    // progressive, C3 and C7 and CB and CF are lossless or
+                    // differential, C9 upward are arithmetic-coded.
+                    sequential_huffman: matches!(marker, 0xC0 | 0xC1),
+                });
             }
         }
 
+        let payload = i + 2..seg_end;
         i = seg_end;
 
         if marker == SOS {
             saw_sos = true;
+
+            // Scan header: component count, then a component selector and its
+            // two table selectors for each, then the spectral parameters.
+            let scan: Vec<ScanComponent> = match d.get(payload.start) {
+                Some(&ns) if payload.start + 1 + 2 * ns as usize <= payload.end => (0..ns as usize)
+                    .filter_map(|c| {
+                        let at = payload.start + 1 + 2 * c;
+                        let tables = d.get(at + 1).copied()?;
+                        Some(ScanComponent {
+                            id: d.get(at).copied()?,
+                            dc_table: tables >> 4,
+                            ac_table: tables & 0x0F,
+                        })
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+
+            if let Some(f) = frame.as_ref() {
+                match jpeg_entropy::decode_scan(d, i, f, &scan, &tables, restart_interval) {
+                    ScanResult::Complete {
+                        end,
+                        mcus,
+                        restarts: rsts,
+                    } => {
+                        // Every MCU the frame calls for, ending exactly at a
+                        // marker. Nothing was inserted and nothing is missing.
+                        restarts += rsts;
+                        decoded_scans += 1;
+                        decoded_mcus += mcus;
+                        verified_to = end;
+                        i = end;
+                        continue;
+                    }
+                    ScanResult::Truncated {
+                        verified_to: vt,
+                        mcus,
+                    } => {
+                        return truncated(
+                            vt.max(verified_to),
+                            saw_sof,
+                            saw_sos,
+                            &format!("the entropy data ends {mcus} MCUs into a scan"),
+                        );
+                    }
+                    ScanResult::Broken {
+                        verified_to: vt,
+                        mcus,
+                        why,
+                    } => {
+                        return decode_failed(vt.max(verified_to), mcus, why, restarts, dims);
+                    }
+                    // Progressive, lossless, arithmetic, or tables that were
+                    // never defined: the byte-level walk below is all there is.
+                    ScanResult::NotApplicable => {}
+                }
+            }
+
             // Entropy-coded data follows the scan header with no length of its
             // own. It ends at the next marker that is neither a stuffed FF 00
             // nor a restart.
@@ -333,6 +460,29 @@ fn out_of_sequence(
     .with("restart_markers", restarts)
     .with("restarts_out_of_order", 1)
     .with("spliced_after", last_good)
+}
+
+/// The entropy data decoded, and what came out cannot be this file's.
+///
+/// This is the check that sees an inserted fragment gap: the byte-level walk
+/// cannot, because inserting data leaves the restart-marker sequence intact.
+/// Partial with an unestablished length, at the end of the last MCU that
+/// decoded cleanly - which is where a reassembler must look for the next
+/// fragment.
+fn decode_failed(
+    last_good: usize,
+    mcus: u64,
+    why: String,
+    restarts: u64,
+    dims: Option<(u16, u16)>,
+) -> Outcome {
+    let (w, h) = dims.unwrap_or((0, 0));
+    Outcome::partial(last_good as u64, why)
+        .with("width", w)
+        .with("height", h)
+        .with("restart_markers", restarts)
+        .with("mcus_decoded", mcus)
+        .with("spliced_after", last_good)
 }
 
 /// Out of data, but we know what it is.

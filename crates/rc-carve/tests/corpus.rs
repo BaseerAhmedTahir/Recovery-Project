@@ -484,6 +484,114 @@ fn check_prefixes_ran_out(c: &Corpus, label: &str) {
     );
 }
 
+/// The JPEG entropy decoder must actually run, and agree with the frame.
+///
+/// A decoder that quietly declines every file would leave every test above
+/// passing and every claim about it false - the validator would be back to
+/// walking markers. So: every JPEG in the corpus that is a sequential Huffman
+/// frame must report the scans it decoded and the MCUs they held, and the MCU
+/// count must be the one its own dimensions and sampling call for.
+///
+/// Progressive frames are not decoded and report zero, which is the honest
+/// answer; they are counted here so the split is visible rather than assumed.
+fn check_jpeg_scans_are_decoded(c: &Corpus, label: &str) {
+    let mut decoded = 0usize;
+    let mut progressive = 0usize;
+    let mut wrong = Vec::new();
+    for (rel, s) in &c.files {
+        if s.kind != "jpeg" {
+            continue;
+        }
+        let data = read(&c.dir, rel);
+        let out = validate::validate("jpeg", &data).expect("validator must exist");
+        // SOF2 is progressive: not a mode the decoder handles.
+        let is_progressive = data.windows(2).any(|w| w == [0xFF, 0xC2]);
+        let scans: u64 = out
+            .evidence_of("scans_decoded")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let mcus: u64 = out
+            .evidence_of("mcus_decoded")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if is_progressive {
+            progressive += 1;
+            if scans != 0 {
+                wrong.push(format!(
+                    "{rel}: progressive, but reports {scans} decoded scan(s)"
+                ));
+            }
+            continue;
+        }
+        if scans == 0 {
+            wrong.push(format!(
+                "{rel} ({} bytes): sequential, but no scan was decoded - {}",
+                data.len(),
+                out.detail
+            ));
+            continue;
+        }
+        // The MCUs decoded must be what the frame calls for. Recomputed here
+        // from the file's own header rather than taken from the validator, so
+        // this is a check and not an echo.
+        let (w, h, sampling) = jpeg_geometry(&data);
+        let (hmax, vmax) = sampling
+            .iter()
+            .fold((1u64, 1u64), |(a, b), &(x, y)| (a.max(x), b.max(y)));
+        let want = w.div_ceil(8 * hmax) * h.div_ceil(8 * vmax);
+        if mcus != want {
+            wrong.push(format!(
+                "{rel}: decoded {mcus} MCUs, but {w}x{h} at {hmax}x{vmax} sampling needs {want}"
+            ));
+        }
+        decoded += 1;
+    }
+    eprintln!(
+        "  {label}: {decoded} JPEG(s) entropy-decoded, {progressive} progressive (not decoded)"
+    );
+    assert!(
+        wrong.is_empty(),
+        "{label}: {} JPEG(s) the entropy decoder did not handle as expected:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    assert!(
+        decoded > 0,
+        "{label}: no JPEG was entropy-decoded, so nothing here tests the decoder"
+    );
+}
+
+/// Width, height and per-component sampling factors from a JPEG's frame header.
+fn jpeg_geometry(d: &[u8]) -> (u64, u64, Vec<(u64, u64)>) {
+    let mut i = 2usize;
+    while i + 4 <= d.len() && d[i] == 0xFF {
+        let m = d[i + 1];
+        if m == 0xFF {
+            i += 1;
+            continue;
+        }
+        let n = u16::from_be_bytes([d[i + 2], d[i + 3]]) as usize;
+        if matches!(m, 0xC0..=0xC2) {
+            let p = i + 4;
+            let h = u16::from_be_bytes([d[p + 1], d[p + 2]]) as u64;
+            let w = u16::from_be_bytes([d[p + 3], d[p + 4]]) as u64;
+            let nc = d[p + 5] as usize;
+            let sampling = (0..nc)
+                .map(|c| {
+                    let s = d[p + 7 + 3 * c];
+                    ((s >> 4) as u64, (s & 0x0F) as u64)
+                })
+                .collect();
+            return (w, h, sampling);
+        }
+        if m == 0xDA {
+            break;
+        }
+        i += 2 + n;
+    }
+    (0, 0, Vec::new())
+}
+
 // ---------------------------------------------------------------------------
 // the generated corpus
 // ---------------------------------------------------------------------------
@@ -501,6 +609,11 @@ fn generated_corpus_produces_no_cross_format_false_positives() {
 #[test]
 fn generated_corpus_lengths_ignore_trailing_data() {
     check_trailing_data_ignored(generated(), "generated corpus");
+}
+
+#[test]
+fn generated_corpus_jpeg_scans_are_decoded() {
+    check_jpeg_scans_are_decoded(generated(), "generated corpus");
 }
 
 #[test]
@@ -550,6 +663,11 @@ fn independent_corpus_produces_no_cross_format_false_positives() {
 #[test]
 fn independent_corpus_lengths_ignore_trailing_data() {
     check_trailing_data_ignored(independent(), "independent corpus");
+}
+
+#[test]
+fn independent_corpus_jpeg_scans_are_decoded() {
+    check_jpeg_scans_are_decoded(independent(), "independent corpus");
 }
 
 #[test]
