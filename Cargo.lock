@@ -497,6 +497,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rc-bifrag"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rc-carve",
+ "rc-device",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "rc-carve"
 version = "0.1.0"
 dependencies = [

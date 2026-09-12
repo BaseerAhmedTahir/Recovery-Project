@@ -1,0 +1,18 @@
+[package]
+name = "rc-bifrag"
+description = "Fragment reassembly: stitches carved files back together from in-order fragments."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc-carve.workspace = true
+rc-device.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rc-device = { path = "../rc-device", features = ["test-util"] }
+sha2.workspace = true
+hex.workspace = true
+serde_json.workspace = true
