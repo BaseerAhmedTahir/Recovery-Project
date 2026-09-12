@@ -750,7 +750,14 @@ build_formats() {
 build_overwritten() {
     local name="overwritten" fs="ntfs"
     local img="$OUT_DIR/$name.img"
-    rc_step "$name (populate, delete, partially overwrite)"
+    rc_step "$name (populate, delete, overwrite three ways, record what happened)"
+
+    # Ground truth is what happened to each deleted file, not the method: see
+    # testdata/overmap.py. Until Milestone 5 this fixture recorded only a rule,
+    # and measured on the image it produced, no file was partially overwritten
+    # at all - the YELLOW band had no case.
+    local tmp
+    tmp="$(mktemp -d)"
 
     rc_image_create "$img" >/dev/null
     local dev mp
@@ -759,13 +766,27 @@ build_overwritten() {
     mp="$(rc_mount "$fs" "$dev")"
     populate_corpus "$mp" "$CORPUS_DIR"
     delete_subset "$mp"
+    rc_umount "$mp"
 
-    # Overwrite roughly the first third of the remaining free space with a
-    # recognisable pattern, then remove the overwriting file itself.
+    # 1. Before anything is overwritten, locate every cluster of every deleted
+    #    file by content.
+    printf '%s\n' "${DELETED_SET[@]}" | python3 -c \
+        'import sys, json
+raw = sys.stdin.buffer.read().decode("utf-8")
+print(json.dumps([l for l in raw.split("\n") if l]))' > "$tmp/deleted.json"
+    python3 "$HERE/overmap.py" map "$img" "$CORPUS_DIR" "$CORPUS_MANIFEST" \
+        "$tmp/deleted.json" "$RC_CLUSTER_BYTES" > "$tmp/before.json" \
+        || rc_die "could not map the deleted files' clusters"
+    rc_log "mapped the clusters of every deleted file"
+
+    mp="$(rc_mount "$fs" "$dev")"
+    # 2a. Overwrite roughly a third of the free space with a pattern, then free
+    #     it again: clusters overwritten and unallocated, as after any
+    #     temporary file.
     local free_kib third
     free_kib="$(df -k --output=avail "$mp" | tail -1)"
     third=$(( free_kib / 3 ))
-    rc_log "overwriting ~${third}KiB of free space with 0xDB pattern"
+    rc_log "overwriting ~${third}KiB of free space with 0xDB, then deleting it"
     python3 - "$mp/overwrite.bin" "$third" <<'PY'
 import os, sys
 path, kib = sys.argv[1], int(sys.argv[2])
@@ -784,15 +805,57 @@ PY
     rm -f "$mp/overwrite.bin"
     sync
 
+    # 2b. A file written after the deletions and kept: whichever freed clusters
+    #     it takes are now allocated to a live file - the RED case SPEC.md
+    #     5.7 names first. Random bytes, so only allocation can tell.
+    python3 "$HERE/overmap.py" livefile "$mp/live_after.bin" $(( 16 * 1024 * 1024 )) 4242 \
+        "$RC_CLUSTER_BYTES" > "$tmp/live.json" \
+        || rc_die "could not write the live file"
+    sync
     rc_umount "$mp"
     rc_loop_detach "$dev"
 
+    # 2c. Deliberate partial overwrites, straight into chosen files' clusters,
+    #     so every band and every kind of evidence has a case.
+    python3 "$HERE/overmap.py" damage "$img" "$tmp/before.json" 5151 "$CORPUS_MANIFEST" \
+        > "$tmp/damage.json" || rc_die "could not apply the damage plan"
+    rc_log "applied $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$tmp/damage.json") targeted overwrites"
+
     local extra
-    extra='{"overwrite":{"pattern_byte":"0xDB","fraction_of_free_space":0.33,"note":"Deleted files whose clusters fall in the overwritten region must classify RED; the remainder should classify GREEN."}}'
+    extra='{"overwrite":{"pattern_byte":"0xDB","fraction_of_free_space":0.33,"live_file":"live_after.bin (16 MiB random, kept)","note":"Per-file outcomes are in overwrite_truth, measured after the build. The classification policy is in testdata/overmap.py classify()."}}'
     write_expected "$name" "$fs" "$img" "$CORPUS_MANIFEST" false \
-        "Corpus written, a fixed subset deleted, then roughly a third of free space overwritten with 0xDB. Grades the Milestone 5 confidence classifier." \
+        "Corpus written and a fixed subset deleted; then a third of free space overwritten with 0xDB and freed, a 16 MiB file written and kept, and eleven deliberate partial overwrites applied to chosen deleted files. Grades the Milestone 5 confidence classifier." \
         "$extra"
-    rc_log "wrote $(basename "${img%.img}.expected.json")"
+
+    # 3. What actually happened, per deleted file.
+    python3 "$HERE/overmap.py" truth "$img" "$tmp/before.json" "$tmp/damage.json" "$tmp/live.json" \
+        > "$tmp/truth.json" || rc_die "could not compute the overwrite truth"
+    python3 - "${img%.img}.expected.json" "$tmp/truth.json" "$tmp/damage.json" "$tmp/live.json" <<'PY'
+import json, sys
+path, truth, damage = sys.argv[1], json.load(open(sys.argv[2])), json.load(open(sys.argv[3]))
+live_file = json.load(open(sys.argv[4]))
+doc = json.load(open(path, encoding="utf-8"))
+doc["overwrite_truth"] = truth
+doc["overwrite_damage"] = damage
+# The live file is a real present file on the volume; say so, or the present
+# count is wrong by one for anything that lists the volume.
+doc["files"]["live_after.bin"] = {"kind": "binary", "sha256": live_file["sha256"],
+                                  "size": live_file["bytes"], "state": "present"}
+doc["expect"]["present_count"] = sum(1 for f in doc["files"].values() if f["state"] == "present")
+counts = truth["counts"]
+# A band with no case would grade nothing, which is the failure this fixture
+# was rebuilt to fix. Refuse to write one.
+missing = [b for b in ("GREEN", "YELLOW", "RED") if not counts.get(b)]
+if missing:
+    raise SystemExit("overwritten fixture has no %s case: %s" % (missing, counts))
+live = sum(1 for f in truth["files"].values() if f["lost_to_live_file"])
+if not live:
+    raise SystemExit("no deleted file lost a cluster to the live file; allocation is untested")
+json.dump(doc, open(path, "w", encoding="utf-8"), indent=2, sort_keys=True)
+print("    classes: %s; %d file(s) lost clusters to the live file" % (counts, live), file=sys.stderr)
+PY
+    rm -rf "$tmp"
+    rc_log "wrote $(basename "${img%.img}.expected.json") with per-file overwrite truth"
 }
 
 # A partitioned image whose partition table has been destroyed. rc-partition
