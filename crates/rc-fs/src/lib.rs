@@ -14,6 +14,7 @@ pub mod ntfs;
 
 pub use detect::{detect, scan_volume, FsType};
 pub use entry::{
-    DataLocation, Entry, EntryKind, EntryState, Extent, PathConfidence, ScanResult, Timestamps,
+    DataLocation, Entry, EntryKind, EntryState, Extent, Geometry, PathConfidence, ScanResult,
+    Timestamps,
 };
 pub use error::{FsError, Result};

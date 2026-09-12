@@ -299,7 +299,15 @@ impl<'a> ExfatVolume<'a> {
     }
 
     pub fn scan(&self) -> Result<ScanResult> {
-        let mut result = ScanResult::default();
+        let mut result = ScanResult {
+            geometry: crate::entry::Geometry {
+                cluster_bytes: self.boot.cluster_bytes(),
+                heap_offset: self.base + self.boot.cluster_heap_offset_bytes(),
+                first_cluster: 2,
+                cluster_count: self.boot.cluster_count as u64,
+            },
+            ..ScanResult::default()
+        };
         let mut visited = HashSet::new();
         visited.insert(self.boot.first_cluster_of_root);
 

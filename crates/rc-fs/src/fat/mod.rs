@@ -66,7 +66,16 @@ impl<'a> FatVolume<'a> {
 
     /// Scan the whole volume.
     pub fn scan(&self) -> Result<ScanResult> {
-        let mut result = ScanResult::default();
+        let mut result = ScanResult {
+            geometry: crate::entry::Geometry {
+                cluster_bytes: self.bpb.cluster_bytes(),
+                heap_offset: self.base
+                    + self.bpb.first_data_sector() * self.bpb.bytes_per_sector as u64,
+                first_cluster: 2,
+                cluster_count: self.bpb.cluster_count,
+            },
+            ..ScanResult::default()
+        };
         let mut visited: HashSet<u32> = HashSet::new();
 
         // The root directory is a fixed region on FAT12/16 and a normal

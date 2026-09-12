@@ -211,10 +211,52 @@ impl Entry {
     }
 }
 
+/// How a volume's cluster numbers map to bytes on the device.
+///
+/// The three parsers number clusters differently - NTFS from 0 at the start of
+/// the volume, FAT and exFAT from 2 at the start of their data region - and
+/// anything that reads a file's content from its runs, or marks which clusters
+/// live files occupy, needs one mapping for all of them. Scoring does both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Geometry {
+    pub cluster_bytes: u64,
+    /// Device byte offset of cluster `first_cluster`.
+    pub heap_offset: u64,
+    /// The lowest cluster number with storage behind it: 0 on NTFS, 2 on FAT
+    /// and exFAT.
+    pub first_cluster: u64,
+    /// How many clusters have storage.
+    pub cluster_count: u64,
+}
+
+impl Geometry {
+    /// Device byte offset of `cluster`, or `None` for a number with no storage.
+    pub fn cluster_offset(&self, cluster: u64) -> Option<u64> {
+        let index = cluster.checked_sub(self.first_cluster)?;
+        if index >= self.cluster_count || self.cluster_bytes == 0 {
+            return None;
+        }
+        index
+            .checked_mul(self.cluster_bytes)?
+            .checked_add(self.heap_offset)
+    }
+
+    /// The cluster containing device byte `offset`, if it is in the heap.
+    pub fn cluster_at(&self, offset: u64) -> Option<u64> {
+        if self.cluster_bytes == 0 {
+            return None;
+        }
+        let index = offset.checked_sub(self.heap_offset)? / self.cluster_bytes;
+        (index < self.cluster_count).then_some(index + self.first_cluster)
+    }
+}
+
 /// What a parser found, plus what it could not do.
 #[derive(Clone, Debug, Default)]
 pub struct ScanResult {
     pub entries: Vec<Entry>,
+    /// The volume's cluster layout, so entries' runs can be read.
+    pub geometry: Geometry,
     /// Records that were present but unreadable, with the reason. Reported
     /// rather than silently dropped, so a low recovery count is explicable.
     pub damaged: Vec<String>,
@@ -245,6 +287,24 @@ mod tests {
         let s = Extent::sparse(4);
         assert!(s.sparse);
         assert_eq!(s.start_cluster, 0);
+    }
+
+    #[test]
+    fn geometry_maps_clusters_both_ways_and_refuses_numbers_without_storage() {
+        // FAT-style: clusters numbered from 2, heap at 1 MiB, 4 KiB clusters.
+        let g = Geometry {
+            cluster_bytes: 4096,
+            heap_offset: 1 << 20,
+            first_cluster: 2,
+            cluster_count: 100,
+        };
+        assert_eq!(g.cluster_offset(2), Some(1 << 20));
+        assert_eq!(g.cluster_offset(3), Some((1 << 20) + 4096));
+        assert_eq!(g.cluster_offset(1), None, "cluster 1 has no storage");
+        assert_eq!(g.cluster_offset(102), None, "past the last cluster");
+        assert_eq!(g.cluster_at((1 << 20) + 4096 + 17), Some(3));
+        assert_eq!(g.cluster_at(10), None, "before the heap");
+        assert_eq!(Geometry::default().cluster_offset(0), None);
     }
 
     #[test]

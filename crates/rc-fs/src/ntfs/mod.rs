@@ -130,7 +130,16 @@ impl<'a> NtfsVolume<'a> {
     /// (SPEC.md section 5.4); the CLI hides them by default.
     pub fn scan(&self) -> Result<ScanResult> {
         let total = self.record_count();
-        let mut result = ScanResult::default();
+        let mut result = ScanResult {
+            geometry: crate::entry::Geometry {
+                cluster_bytes: self.boot.cluster_bytes(),
+                // NTFS cluster 0 is the first cluster of the volume itself.
+                heap_offset: self.base,
+                first_cluster: 0,
+                cluster_count: self.boot.total_clusters(),
+            },
+            ..ScanResult::default()
+        };
 
         if total > MAX_RECORDS_IN_MEMORY {
             result.notes.push(format!(
