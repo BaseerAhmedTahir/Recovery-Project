@@ -62,6 +62,7 @@ ALL_FIXTURES=(
     exfat-basic
     ext4-basic
     fragmented-jpeg
+    fragmented-hard
     quickformat
     formats
     overwritten
@@ -443,10 +444,34 @@ print(json.dumps({"fragmented_file": {
 # Fragmentation: fill the volume with fixed-size filler files, punch alternating
 # holes by deleting every other one, then write large media into the holes. The
 # allocator has no contiguous run big enough, so each large file is split.
+# Fragment the media by writing it into a volume full of alternating holes.
+#
+# MODE decides what sits in the gaps between a file's fragments, and it is the
+# difference between a test and a formality:
+#
+#   constant  every filler file is one repeated byte. The gaps have zero
+#             entropy against file data at 7.8-7.96 bits per byte, so "skip the
+#             clusters that are all one value" reassembles everything without
+#             understanding a single format. Kept as a sanity check, not as
+#             evidence.
+#   decoy     every filler file is a slice of *other real media* - JPEGs with
+#             the same restart interval, H.264 MP4s, PNGs. A gap then looks like
+#             the file it interrupts, which is what a real disk looks like, and
+#             a reassembler has to use format structure to tell them apart.
+#
+# SIZES decides how big the holes (where fragments land) and the gaps (the
+# filler left between them) are:
+#
+#   fixed     every filler file is HOLE_KIB. Every gap between two fragments is
+#             then the same size, which a search window can be tuned to without
+#             anyone noticing - fine for the sanity check, not for a result.
+#   varied    holes of 8-64 KiB and gaps of 4 KiB to 1 MiB, drawn from a seeded
+#             generator: fragments of different lengths, and gaps from one
+#             cluster to 256 of them.
 build_fragmented() {
-    local name="fragmented-jpeg" fs="vfat"
+    local name="${1:-fragmented-jpeg}" mode="${2:-constant}" sizes="${3:-fixed}" fs="vfat"
     local img="$OUT_DIR/$name.img"
-    rc_step "$name ($fs, hole size ${HOLE_KIB}KiB)"
+    rc_step "$name ($fs, $sizes sizes, gap content: $mode)"
 
     rc_image_create "$img" >/dev/null
     local dev mp
@@ -459,18 +484,58 @@ build_fragmented() {
     # and spawning dd/rm per file makes the build take tens of minutes.
     local free_kib n
     free_kib="$(df -k --output=avail "$mp" | tail -1)"
-    n=$(( free_kib / HOLE_KIB - 4 ))
-    rc_log "writing $n filler files of ${HOLE_KIB}KiB, then deleting every other one"
-    python3 - "$mp/filler" "$n" "$HOLE_KIB" <<'PY'
-import os, sys
-d, n, kib = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+    n=$(( free_kib / 4 ))
+    rc_log "filling with $sizes-size filler files, then deleting every other one"
+    python3 - "$mp/filler" "$n" "$HOLE_KIB" "$mode" "$sizes" "${DECOY_DIR:-}" <<'PY'
+import os, random, sys
+d, n, kib, mode, sizes, decoy_dir = (sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
+                                     sys.argv[4], sys.argv[5], sys.argv[6])
 os.makedirs(d, exist_ok=True)
-blob = b"\xA5" * (kib * 1024)
+
+# Even-numbered filler files are deleted (holes, where fragments land); odd ones
+# stay until the media are written (gaps, what lies between two fragments).
+if sizes == "fixed":
+    def size_for(i):
+        return kib * 1024
+elif sizes == "varied":
+    rng = random.Random(0x9A95)
+    HOLES_KIB = [8, 16, 32, 64]
+    GAPS_KIB = [4, 16, 64, 256, 1024]
+    table = [(rng.choice(HOLES_KIB) if i % 2 == 0 else rng.choice(GAPS_KIB)) * 1024
+             for i in range(n)]
+    def size_for(i):
+        return table[i]
+else:
+    raise SystemExit("unknown filler sizes: " + sizes)
+
+if mode == "decoy":
+    # One stream of real media in a fixed order, sliced into filler files.
+    # Sorted so the fixture is reproducible.
+    stream = bytearray()
+    for root, _dirs, files in sorted(os.walk(decoy_dir)):
+        for f in sorted(files):
+            with open(os.path.join(root, f), "rb") as fh:
+                stream += fh.read()
+    stream = bytes(stream)
+    cursor = [0]
+    def blob_for(i):
+        size = size_for(i)
+        if len(stream) < size:
+            raise SystemExit("decoy pool is smaller than one filler file")
+        start = cursor[0] % len(stream)
+        cursor[0] += size
+        piece = stream[start:start + size]
+        return piece + stream[:size - len(piece)]
+elif mode == "constant":
+    def blob_for(i):
+        return b"\xA5" * size_for(i)
+else:
+    raise SystemExit("unknown filler mode: " + mode)
 written = 0
 for i in range(n):
     try:
         with open(os.path.join(d, "f%05d" % i), "wb") as fh:
-            fh.write(blob)
+            fh.write(blob_for(i))
         written += 1
     except OSError:
         break            # volume full: stop here, the holes below still work
@@ -505,8 +570,60 @@ PY
     rc_loop_detach "$dev"
 
     local extra
-    extra="$(python3 -c 'import json,os; print(json.dumps({"fragmentation":{"hole_kib":int(os.environ["HOLE_KIB"]),"method":"alternating-filler-holes","filesystem":"vfat"}}))')"
+    extra="$(RC_MODE="$mode" RC_SIZES="$sizes" python3 -c '
+import json, os
+mode, sizes = os.environ["RC_MODE"], os.environ["RC_SIZES"]
+where = {
+    "fixed": "alternating %s KiB holes and gaps" % os.environ["HOLE_KIB"],
+    "varied": "holes of 8-64 KiB separated by gaps of 4 KiB to 1 MiB",
+}[sizes]
+what = {
+    "constant": ("every gap is one repeated byte. A sanity check only: skipping "
+                 "uniform clusters reassembles it without understanding any format."),
+    "decoy": ("every gap holds a slice of other real media from the same encoders "
+              "with the same settings - same Huffman tables, restart interval and "
+              "sampling, same H.264 profile. Gaps look like the files they "
+              "interrupt, so reassembly has to use format structure."),
+}[mode]
+frag = {"method": "alternating-filler-holes", "sizes": sizes,
+        "gap_content": mode, "filesystem": "vfat"}
+if sizes == "fixed":
+    frag["hole_kib"] = int(os.environ["HOLE_KIB"])
+else:
+    frag["hole_kib_choices"] = [8, 16, 32, 64]
+    frag["gap_kib_choices"] = [4, 16, 64, 256, 1024]
+print(json.dumps({
+    "fragmentation": frag,
+    "notes": "Media fragmented into %s; %s" % (where, what),
+}))')"
     RC_DELETED_OVERRIDE=1 write_frag_expected "$name" "$fs" "$img" "$extra"
+    embed_layout "$img"
+}
+
+# Record where every fragmented file actually landed.
+#
+# The fragmentation method says where files are *expected* to break. This says
+# where they did: every cluster of every file located in the image, grouped
+# into runs. Reassembly is graded against it, because a hash match says only
+# whether a file came back whole, and the layout says how close a miss was.
+embed_layout() {
+    local img="$1" json="${1%.img}.expected.json"
+    local layout
+    layout="$(python3 "$HERE/fragmap.py" "$img" "$json" "$FRAG_DIR")" \
+        || rc_die "could not recover the fragment layout of $img"
+    RC_LAYOUT="$layout" python3 - "$json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+doc = json.load(open(path, encoding="utf-8"))
+doc["layout"] = json.loads(os.environ["RC_LAYOUT"])
+# A file that did not actually fragment would make its row in any reassembly
+# result meaningless, so say so rather than letting it pass as a success.
+single = [p for p, l in doc["layout"]["files"].items() if l["fragment_count"] < 2]
+if single:
+    raise SystemExit("these files did not fragment: %s" % ", ".join(single))
+json.dump(doc, open(path, "w", encoding="utf-8"), indent=2, sort_keys=True)
+PY
+    rc_log "recorded the true fragment layout"
 }
 
 # The fragmented fixture uses the frag corpus and deletes all of it, so it needs
@@ -536,11 +653,11 @@ doc = {
                   "built_utc": datetime.datetime.now(datetime.timezone.utc)
                                .replace(microsecond=0).isoformat(),
                   "provenance": json.loads(os.environ["RC_PROVENANCE"])},
-    "notes": ("Volume filled with %s KiB filler files, every other one deleted "
-              "to punch holes, then large media written into the fragmented "
-              "free space and deleted. Every listed file is expected to be "
+    "notes": ("Volume filled with filler files, every other one deleted to "
+              "punch holes, then large media written into the fragmented free "
+              "space and deleted. Every listed file is expected to be "
               "fragmented; contiguous-only carving should recover none of them "
-              "byte-exactly." % os.environ["RC_HOLE"]),
+              "byte-exactly."),
     "files": files,
     "expect": {"deleted_count": len(files), "present_count": 0},
 }
@@ -855,6 +972,10 @@ main() {
     rc_log "basic corpus: $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CORPUS_MANIFEST") files"
     python3 "$CORPUS_PY" --set=frag "$FRAG_DIR" > "$FRAG_MANIFEST"
 
+    # Other real media, used to fill the gaps in fragmented-hard.
+    DECOY_DIR="$work/decoy"
+    python3 "$CORPUS_PY" --set=decoy "$DECOY_DIR" > /dev/null
+
     # The format-coverage corpus. Self-checked first: every sample must start
     # with its own signature and clear the resident-file threshold, and a
     # failure there means the fixture would silently prove nothing.
@@ -871,7 +992,8 @@ main() {
             fat32-basic)     build_basic fat32-basic vfat  RCFAT32 ;;
             exfat-basic)     build_basic exfat-basic exfat RCEXFAT ;;
             ext4-basic)      build_basic ext4-basic  ext4  RCEXT4 ;;
-            fragmented-jpeg) build_fragmented ;;
+            fragmented-jpeg) build_fragmented fragmented-jpeg constant fixed ;;
+            fragmented-hard) build_fragmented fragmented-hard decoy varied ;;
             quickformat)     build_quickformat ;;
             formats)         build_formats ;;
             overwritten)     build_overwritten ;;

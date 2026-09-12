@@ -791,14 +791,116 @@ DELETED_SET = [
 DELETED_SET += [p for i, (p, _k, _b) in enumerate(BULK) if i % 3 == 0]
 
 
+# ---------------------------------------------------------------------------
+# Foreign encoders, for the files fragment reassembly is graded on
+# ---------------------------------------------------------------------------
+#
+# Reassembly asks a validator, over and over, whether a splice still decodes.
+# Grading that against files from this module's own encoders would test the
+# validators against the same reading of each spec that wrote them - the
+# correlated-error risk make_independent.py exists to close. So everything the
+# fragmented fixtures contain, targets and decoys alike, comes from ImageMagick
+# and ffmpeg. Missing tools fail the build: a fixture quietly built from
+# something else would grade the wrong thing.
+
+def _tool(name):
+    """A program on PATH, by its own name or with .exe - which is how a Linux
+    build under WSL reaches Windows installs of ImageMagick and ffmpeg."""
+    import shutil
+    for cand in (name, name + ".exe"):
+        path = shutil.which(cand)
+        if path:
+            return path
+    raise SystemExit(
+        "%s is required for the fragmented-fixture corpus and was not found on "
+        "PATH. These files are deliberately not written by this module's own "
+        "encoders; see the note above FRAG_CORPUS." % name)
+
+
+def _tool_version(name):
+    try:
+        exe = _tool(name)
+    except SystemExit:
+        return None
+    flag = "-version"
+    r = subprocess.run([exe, flag], capture_output=True, timeout=60, check=False)
+    first = r.stdout.decode("utf-8", "replace").splitlines()
+    return first[0].strip() if first else None
+
+
+def _run_tool(argv, out_name=None):
+    """Run a foreign encoder in a scratch directory and return what it wrote.
+
+    Output goes to a relative path so that a Windows executable launched from
+    WSL, which cannot see Linux paths but inherits a translated working
+    directory, still writes where this process can read it.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        r = subprocess.run(argv, cwd=td, capture_output=True, timeout=600, check=False)
+        if r.returncode != 0:
+            raise SystemExit("%s failed (%d): %s" % (
+                os.path.basename(argv[0]), r.returncode,
+                r.stderr.decode("utf-8", "replace")[-400:]))
+        if out_name is None:
+            return r.stdout
+        with open(os.path.join(td, out_name), "rb") as fh:
+            return fh.read()
+
+
+def im_jpeg(width, height, seed, restart_interval):
+    """A photo-like JPEG as a camera writes one: 4:2:0, the Annex K Huffman
+    tables (optimize-coding off), and a restart interval in MCUs - or none."""
+    argv = [_tool("magick"), "-seed", str(seed), "-size", "%dx%d" % (width, height),
+            "plasma:fractal", "-sampling-factor", "2x2,1x1,1x1",
+            "-define", "jpeg:optimize-coding=false"]
+    if restart_interval:
+        argv += ["-define", "jpeg:restart-interval=%d" % restart_interval]
+    return _run_tool(argv + ["-quality", "88", "jpg:-"])
+
+
+def im_png(width, height, seed):
+    return _run_tool([_tool("magick"), "-seed", str(seed), "-size",
+                      "%dx%d" % (width, height), "plasma:fractal", "png:-"])
+
+
+def ff_mp4(seed, faststart, seconds=8):
+    """H.264 in MP4 from libx264, with temporal noise so the samples are sized
+    like a camera's rather than like a test pattern's.
+
+    `faststart` puts the moov box in front of mdat. Without it moov comes last,
+    which is what a recorder writes - it cannot know the index until it stops.
+    """
+    argv = [_tool("ffmpeg"), "-nostdin", "-y", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=%d" % seconds,
+            "-vf", "noise=alls=14:allf=t+u:all_seed=%d" % seed,
+            "-c:v", "libx264", "-preset", "medium", "-crf", "26", "-g", "50",
+            "-pix_fmt", "yuv420p", "-threads", "1", "-fflags", "+bitexact"]
+    if faststart:
+        argv += ["-movflags", "+faststart"]
+    return _run_tool(argv + ["out.mp4"], out_name="out.mp4")
+
+
 # Larger payloads used only by the fragmented-* fixtures. Each file must be
-# comfortably bigger than the filler hole size (see build_fixtures.sh) so the
-# allocator is forced to split it across several non-adjacent runs.
+# bigger than the largest filler hole (64 KiB, see build_fixtures.sh) so the
+# allocator is forced to split it; the build checks that every one did.
+#
+# Each file is here for a structural reason, not for volume:
+#   large_a  restart every 4 MCUs - several landmarks per cluster
+#   large_b  restart every MCU row (800 wide at 4:2:0 = 50 MCUs) - a cluster
+#            can hold no restart marker at all, so progress is invisible
+#            between them
+#   large_f  no restart interval - nothing localises a splice
+#   large_c  H.264, moov before mdat - the index is in the first fragment
+#   large_e  H.264, moov after mdat - the index is in the last fragment,
+#            which is how recorders write files
+#   large_d  PNG as libpng writes it, IDAT in 8 KiB chunks
 FRAG_CORPUS = [
-    ("frag/large_a.jpg", "jpeg", lambda: make_jpeg(640, 480, 9001)),
-    ("frag/large_b.jpg", "jpeg", lambda: make_jpeg(560, 420, 9002)),
-    ("frag/large_c.mp4", "mp4", lambda: make_mp4(9003, chunks=120)),
-    ("frag/large_d.png", "png", lambda: make_png(640, 480, 9004)),
+    ("frag/large_a.jpg", "jpeg", lambda: im_jpeg(1024, 768, 9001, 4)),
+    ("frag/large_b.jpg", "jpeg", lambda: im_jpeg(800, 600, 9002, 50)),
+    ("frag/large_f.jpg", "jpeg", lambda: im_jpeg(960, 720, 9006, 0)),
+    ("frag/large_c.mp4", "mp4", lambda: ff_mp4(9003, faststart=True)),
+    ("frag/large_e.mp4", "mp4", lambda: ff_mp4(9005, faststart=False)),
+    ("frag/large_d.png", "png", lambda: im_png(480, 360, 9004)),
 ]
 
 # One file per carvable format, for the format-coverage fixture. Kept in a
@@ -808,7 +910,31 @@ from formats import FORMAT_ITEMS, self_check as formats_self_check  # noqa: E402
 
 FORMATS_CORPUS = list(FORMAT_ITEMS)
 
-SETS = {"basic": CORPUS, "frag": FRAG_CORPUS, "formats": FORMATS_CORPUS}
+# Decoys: other real media, used only to fill the gaps in the hard fragmented
+# fixture. The same encoders with the same settings and dimensions as the
+# targets - the same camera, in effect: same Huffman tables, same restart
+# interval, same sampling, same H.264 profile - so a gap looks like the file it
+# interrupts rather than like filler. Different seeds, so no decoy can contain
+# one of a target's own clusters. See build_fragmented in build_fixtures.sh.
+DECOY_CORPUS = (
+    [("decoy/d%02d.jpg" % i, "jpeg", (lambda s=i: im_jpeg(1024, 768, 7000 + s, 4)))
+     for i in range(3)]
+    + [("decoy/d%02d.jpg" % (3 + i), "jpeg", (lambda s=i: im_jpeg(800, 600, 7010 + s, 50)))
+       for i in range(3)]
+    + [("decoy/d%02d.jpg" % (6 + i), "jpeg", (lambda s=i: im_jpeg(960, 720, 7020 + s, 0)))
+       for i in range(2)]
+    + [("decoy/d%02d.mp4" % i, "mp4", (lambda s=i: ff_mp4(7100 + s, faststart=bool(s % 2))))
+       for i in range(4)]
+    + [("decoy/d%02d.png" % i, "png", (lambda s=i: im_png(480, 360, 7200 + s)))
+       for i in range(3)]
+)
+
+SETS = {
+    "basic": CORPUS,
+    "frag": FRAG_CORPUS,
+    "formats": FORMATS_CORPUS,
+    "decoy": DECOY_CORPUS,
+}
 
 # Every deleted path must be a real corpus path. Without this a typo, or two
 # spellings of the same name in different Unicode normalisation forms, silently
@@ -906,6 +1032,10 @@ def provenance():
         "platform": platform.platform(),
         "make_corpus_sha256": gen_sha,
         "git_commit": commit,
+        # The fragmented fixtures' media come from these; None where absent,
+        # which only the basic and formats sets can tolerate.
+        "imagemagick": _tool_version("magick"),
+        "ffmpeg": _tool_version("ffmpeg"),
     }
 
 
@@ -954,7 +1084,7 @@ def main(argv):
             which = a.split("=", 1)[1]
     if len(args) != 1 or which not in SETS:
         sys.stderr.write(
-            "usage: make_corpus.py [--set=basic|frag|formats] OUTDIR\n"
+            "usage: make_corpus.py [--set=basic|frag|formats|decoy] OUTDIR\n"
             "       make_corpus.py --deleted-set\n"
             "       make_corpus.py --fragment-target\n"
             "       make_corpus.py --provenance\n"
