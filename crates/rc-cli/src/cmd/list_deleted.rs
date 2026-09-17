@@ -111,9 +111,18 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
             .collect();
 
         if chosen.is_empty() {
+            // Say what was found, so an APFS or HFS+ volume gets its own
+            // explanation instead of looking like an empty disk.
+            for p in &table.partitions {
+                if let Err(e @ rc_fs::FsError::NotImplemented { .. }) =
+                    rc_fs::scan_volume(device.as_ref(), p.byte_offset(ss))
+                {
+                    anyhow::bail!("partition {}: {e}", p.index);
+                }
+            }
             anyhow::bail!(
                 "no partition with a supported filesystem was found. \
-                 Supported: NTFS, FAT12/16/32, exFAT. Use --offset to scan a \
+                 Supported: NTFS, FAT12/16/32, exFAT, ext2/3/4. Use --offset to scan a \
                  specific byte offset anyway."
             );
         }

@@ -10,7 +10,7 @@
 //!
 //! So every present file on each fixture is read through its runs and the
 //! geometry and hashed, and must match the manifest. The volumes were made by
-//! mkfs.ntfs, mkfs.vfat and mkfs.exfat, not by this project, so a wrong mapping
+//! mkfs.ntfs, mkfs.vfat, mkfs.exfat and mkfs.ext4, not by this project, so a wrong mapping
 //! has nowhere to hide.
 //!
 //! Fails rather than skips when a fixture is missing.
@@ -151,7 +151,13 @@ fn check(name: &str) -> (usize, usize) {
 #[test]
 fn geometry_reads_every_present_file_byte_exactly() {
     let mut report = Vec::new();
-    for name in ["ntfs-basic", "fat32-basic", "exfat-basic"] {
+    for name in [
+        "ntfs-basic",
+        "fat32-basic",
+        "exfat-basic",
+        "ext4-basic",
+        "ext3-indirect",
+    ] {
         let (matched, present) = check(name);
         // Every present file must have been found and read; one that is never
         // matched would make this a check of fewer files than it claims.

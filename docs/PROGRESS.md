@@ -2,7 +2,24 @@
 
 Running status per SPEC.md section 9. Last updated 2026-09-17.
 
-**Current state: Milestones 1 to 5 complete and verified on Windows.**
+**Current state: Milestones 1 to 6 complete and verified on Windows.**
+
+## Milestone 6 acceptance
+
+> EXT4 (+ JBD2 journal replay), APFS/HFS+ best-effort. Recover from EXT4
+> fixture including journal-only recoveries.
+
+| Criterion | Result |
+|---|---|
+| Deleted names, paths, sizes on ext4-basic | **111/111** each |
+| Content of deleted files | **111/111 byte-exact**, all journal-only: the live inode of every deleted file has dtime set and no extents, checked on the image |
+| Live files through extents | 204/204 byte-exact on ext4-basic |
+| Block maps, holes, symlinks | 7/7 files byte-exact on `ext3-indirect` (mke2fs -d, 1 KiB blocks, direct to triple indirection, a sparse file), both symlink kinds |
+| APFS / HFS+ | Detected, header parsed, recovery refused with an explanation and a pointer to `rc carve`. No file enumeration (LIMITATIONS 3.1) |
+
+The journal is read, never replayed: every journal block is examined, not only
+the live transactions, because a cleanly unmounted journal says it is empty
+while the transactions from before the deletion are still in it.
 
 ## Milestone 5 acceptance
 

@@ -17,8 +17,12 @@ pub enum FsType {
     Fat16,
     Fat32,
     ExFat,
-    /// Recognised but not implemented yet.
+    /// ext2, ext3 and ext4, with JBD2 journal recovery.
     Ext4,
+    /// Recognised and its container superblock read; no file enumeration.
+    Apfs,
+    /// Recognised and its volume header read; no file enumeration.
+    HfsPlus,
     Unknown,
 }
 
@@ -26,7 +30,12 @@ impl FsType {
     pub fn is_supported(self) -> bool {
         matches!(
             self,
-            FsType::Ntfs | FsType::Fat12 | FsType::Fat16 | FsType::Fat32 | FsType::ExFat
+            FsType::Ntfs
+                | FsType::Fat12
+                | FsType::Fat16
+                | FsType::Fat32
+                | FsType::ExFat
+                | FsType::Ext4
         )
     }
 }
@@ -40,6 +49,8 @@ impl fmt::Display for FsType {
             FsType::Fat32 => "fat32",
             FsType::ExFat => "exfat",
             FsType::Ext4 => "ext4",
+            FsType::Apfs => "apfs",
+            FsType::HfsPlus => "hfs+",
             FsType::Unknown => "unknown",
         })
     }
@@ -78,13 +89,21 @@ pub fn detect(device: &dyn ReadOnlyDevice, base: u64) -> Result<FsType> {
         return Ok(FsType::Ext4);
     }
 
+    // APFS: NXSB at +32 of the container. HFS+: H+ or HX at +1024.
+    if crate::apple::is_apfs(&sector) {
+        return Ok(FsType::Apfs);
+    }
+    if crate::apple::is_hfsplus(&sb) {
+        return Ok(FsType::HfsPlus);
+    }
+
     Ok(FsType::Unknown)
 }
 
 /// Detect and scan in one step.
 ///
-/// Unimplemented filesystems return [`FsError::Unimplemented`] rather than an
-/// empty result, so the CLI can say "ext4 is not supported yet" instead of
+/// Unimplemented filesystems return [`FsError::NotImplemented`] rather than an
+/// empty result, so the CLI can say "APFS is not supported" instead of
 /// "no deleted files found" - which would be a lie (SPEC.md section 9: no
 /// stubs pretending to be features).
 pub fn scan_volume(device: &dyn ReadOnlyDevice, base: u64) -> Result<(FsType, ScanResult)> {
@@ -95,10 +114,15 @@ pub fn scan_volume(device: &dyn ReadOnlyDevice, base: u64) -> Result<(FsType, Sc
             crate::fat::FatVolume::open(device, base)?.scan()?
         }
         FsType::ExFat => crate::exfat::ExfatVolume::open(device, base)?.scan()?,
-        FsType::Ext4 => {
-            return Err(FsError::Unimplemented {
-                fs: "ext4 (scheduled for Milestone 6, including JBD2 journal replay)",
-            })
+        FsType::Ext4 => crate::ext4::Ext4Volume::open(device, base)?.scan()?,
+        FsType::Apfs | FsType::HfsPlus => {
+            let what = crate::apple::describe(device, base)?.unwrap_or_default();
+            return Err(FsError::NotImplemented {
+                fs: if fs == FsType::Apfs { "APFS" } else { "HFS+" },
+                detail: format!(
+                    "{what}. Deleted-file recovery from this filesystem is not implemented (header parsing only); use `rc carve` to recover files by signature."
+                ),
+            });
         }
         FsType::Unknown => {
             return Err(FsError::Unrecognised {
@@ -118,10 +142,9 @@ mod tests {
         assert!(FsType::Ntfs.is_supported());
         assert!(FsType::Fat32.is_supported());
         assert!(FsType::ExFat.is_supported());
-        assert!(
-            !FsType::Ext4.is_supported(),
-            "ext4 is Milestone 6 and must not claim support"
-        );
+        assert!(FsType::Ext4.is_supported(), "ext4 landed in Milestone 6");
+        assert!(!FsType::Apfs.is_supported(), "APFS is detection only");
+        assert!(!FsType::HfsPlus.is_supported(), "HFS+ is detection only");
         assert!(!FsType::Unknown.is_supported());
     }
 

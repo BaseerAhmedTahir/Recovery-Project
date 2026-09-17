@@ -240,17 +240,50 @@ compressor, which is more coverage than a bit-identical copy would give.
 
 ### 3.1 Not yet implemented
 
-Milestones 1 to 5 deliver device access, imaging, partition discovery,
-deleted-entry recovery for NTFS, FAT12/16/32 and exFAT, signature carving with
-validators, fragment reassembly, Green/Yellow/Red scoring, resumable carving and
-previews. There is still **no** mobile support. Reassembly is a
-library (`rc-bifrag`) that the CLI does not yet expose: `rc` has five
-subcommands: `devices`, `image`, `verify`, `smoke`, `list-deleted`, plus
-`carve`.
+Milestones 1 to 6 deliver device access, imaging, partition discovery,
+deleted-entry recovery for NTFS, FAT12/16/32, exFAT and ext2/3/4 (through the
+JBD2 journal), signature carving with validators, fragment reassembly,
+Green/Yellow/Red scoring, resumable carving and previews. Reassembly is a
+library (`rc-bifrag`) that the CLI does not yet expose.
 
-**ext4, APFS and HFS+ are not implemented.** `rc list-deleted` says so
-explicitly rather than reporting zero deleted files, which would be a lie.
-ext4 (with JBD2 journal replay) is Milestone 6.
+**APFS and HFS+ are detection only.** Both are recognised and their headers
+read; `rc list-deleted` then says what the volume is and that deleted-file
+recovery from it is not implemented, and points at `rc carve`. No catalog
+B-tree, object map, older checkpoint or snapshot is read. The reason is
+evidence, not effort: no tool on this machine can make an APFS or HFS+ volume
+with files on it (no macOS, no hfsplus module in the WSL kernel, and
+`mkfs.apfs`/`mkfs.hfsplus` make empty volumes only), and a deleted-record
+parser checked against nothing would be a stub pretending to be a feature. The
+header parsers themselves are checked only against hand-built headers laid out
+from Apple's specifications.
+
+### 3.1c ext4 recovery depends on the journal, and the journal is short
+
+Measured on the ext4 fixture (Linux 6.6 kernel): unlink zeroes a file's extent
+tree and size, and its name does not survive in the live directory block. So
+without the journal an ext4 deletion leaves nothing to recover but that an inode
+was used. Every one of the fixture's 111 deleted files is a journal-only
+recovery: name from a logged directory block, extents from a logged pre-deletion
+inode, content byte-exact (`rc-fs/tests/ext4_journal.rs`).
+
+- The journal is a ring (16 MiB on a 512 MiB volume, up to 1 GiB on large
+  ones). Once later transactions overwrite a deletion's predecessors, that file
+  cannot be located through metadata at all; carve instead. On a busy root
+  filesystem that can be minutes.
+- Only metadata is journalled in the default `ordered` mode, so the content is
+  read from the blocks the old extents name. If those blocks were reused, the
+  bytes are the new file's; scoring reads them and rates accordingly.
+- Deleted directories are recovered when a copy of their inode survives; files
+  inside a deleted directory whose inode copy has gone get no path.
+- Tested kernels: one (6.6, WSL2). The slack after live directory entries is
+  read for deleted names too, but on this fixture no name survived there, so
+  that path is exercised only by a unit test.
+- Block maps (ext2/ext3), holes and symlinks are checked on a volume made by
+  `mke2fs -d` with nothing deleted (`ext3-indirect`); deletion recovery on a
+  block-mapped volume is untested, and ext3 zeroes block maps on delete too.
+- Not handled: `inline_data` directories, encrypted (`fscrypt`) names and
+  content, `bigalloc` clusters, external journal devices, and fast-commit
+  blocks. An encrypted directory's names come out as ciphertext.
 
 ### 3.1a A deleted FAT or exFAT file's layout is a guess, not a fact
 

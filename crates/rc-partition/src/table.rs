@@ -30,7 +30,12 @@ impl FsKind {
     pub fn is_supported(self) -> bool {
         matches!(
             self,
-            FsKind::Ntfs | FsKind::Fat12 | FsKind::Fat16 | FsKind::Fat32 | FsKind::ExFat
+            FsKind::Ntfs
+                | FsKind::Fat12
+                | FsKind::Fat16
+                | FsKind::Fat32
+                | FsKind::ExFat
+                | FsKind::Ext4
         )
     }
 }
@@ -232,7 +237,8 @@ mod tests {
         assert!(FsKind::Ntfs.is_supported());
         assert!(FsKind::Fat32.is_supported());
         assert!(FsKind::ExFat.is_supported());
-        assert!(!FsKind::Ext4.is_supported(), "ext4 lands in Milestone 6");
+        assert!(FsKind::Ext4.is_supported(), "ext4 landed in Milestone 6");
+        assert!(!FsKind::Apfs.is_supported());
         assert!(!FsKind::Unknown.is_supported());
     }
 

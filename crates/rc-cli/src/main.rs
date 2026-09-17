@@ -52,7 +52,7 @@ enum Command {
     /// Recover deleted filenames, sizes, timestamps and the original folder
     /// tree from a device or image.
     ///
-    /// Supports NTFS, FAT12/16/32 and exFAT. Allocated files are hidden by
+    /// Supports NTFS, FAT12/16/32, exFAT and ext2/3/4 (with the JBD2 journal). Allocated files are hidden by
     /// default; pass --include-allocated to see them.
     #[command(name = "list-deleted")]
     ListDeleted(cmd::list_deleted::Args),

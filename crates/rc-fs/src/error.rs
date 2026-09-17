@@ -28,8 +28,10 @@ pub enum FsError {
     #[error("directory entry error: {detail}")]
     DirectoryEntry { detail: String },
 
-    #[error("{fs} support is not implemented yet")]
-    Unimplemented { fs: &'static str },
+    /// Recognised, but recovery from it is not implemented. `detail` says what
+    /// was read and what to do instead.
+    #[error("{fs}: {detail}")]
+    NotImplemented { fs: &'static str, detail: String },
 
     #[error(transparent)]
     Device(#[from] rc_device::DeviceError),

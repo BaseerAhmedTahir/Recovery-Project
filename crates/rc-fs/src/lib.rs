@@ -5,10 +5,12 @@
 //! enumerated too, but only so the scoring engine knows which clusters are
 //! occupied; the CLI hides them by default.
 
+pub mod apple;
 pub mod detect;
 pub mod entry;
 pub mod error;
 pub mod exfat;
+pub mod ext4;
 pub mod fat;
 pub mod ntfs;
 

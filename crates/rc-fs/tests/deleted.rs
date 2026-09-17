@@ -514,7 +514,7 @@ fn exfat_recovers_deleted_entries() {
 /// The folder tree must be rebuilt, not just the names.
 #[test]
 fn original_folder_tree_is_reconstructed() {
-    for name in ["ntfs-basic", "fat32-basic", "exfat-basic"] {
+    for name in ["ntfs-basic", "fat32-basic", "exfat-basic", "ext4-basic"] {
         let Some(s) = grade(name) else { continue };
         assert!(
             s.path_accuracy() >= BAR,
@@ -530,7 +530,7 @@ fn original_folder_tree_is_reconstructed() {
 /// Sizes come from the same metadata as the names and should be exact.
 #[test]
 fn sizes_are_recovered() {
-    for name in ["ntfs-basic", "fat32-basic", "exfat-basic"] {
+    for name in ["ntfs-basic", "fat32-basic", "exfat-basic", "ext4-basic"] {
         let Some(s) = grade(name) else { continue };
         assert!(
             s.size_hits as f64 / s.expected_deleted.max(1) as f64 >= BAR,
@@ -541,23 +541,16 @@ fn sizes_are_recovered() {
     }
 }
 
-/// ext4 is Milestone 6 and must say so rather than returning nothing.
 #[test]
-fn ext4_reports_that_it_is_unimplemented() {
-    let Some((img, _)) = load_expected("ext4-basic") else {
-        return;
-    };
-    let device = rc_device::open(&img, None).expect("open");
-    match rc_fs::scan_volume(device.as_ref(), 0) {
-        Err(rc_fs::FsError::Unimplemented { fs }) => {
-            assert!(
-                fs.contains("ext4"),
-                "the message should name the filesystem"
-            );
-        }
-        Err(e) => panic!("expected Unimplemented, got {e}"),
-        Ok(_) => panic!("ext4 must not silently claim to work"),
-    }
+fn ext4_recovers_deleted_entries() {
+    let s = grade("ext4-basic").expect("ext4-basic fixture not built");
+    report("ext4-basic", &s);
+    assert!(
+        s.name_accuracy() >= BAR,
+        "ext4 name accuracy {:.1}% is below the {:.0}% bar. Deleted names do not          survive in live directory blocks on this kernel; they come from the JBD2 journal.",
+        s.name_accuracy() * 100.0,
+        BAR * 100.0
+    );
 }
 
 /// Detection must not depend on a partition type code.
@@ -582,7 +575,7 @@ fn detects_each_filesystem_from_its_boot_sector() {
 /// clusters are occupied (SPEC.md section 5.4).
 #[test]
 fn allocated_files_are_enumerated_for_the_scoring_engine() {
-    for name in ["ntfs-basic", "fat32-basic", "exfat-basic"] {
+    for name in ["ntfs-basic", "fat32-basic", "exfat-basic", "ext4-basic"] {
         let Some((img, exp)) = load_expected(name) else {
             continue;
         };

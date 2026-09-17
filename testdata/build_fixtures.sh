@@ -67,6 +67,7 @@ ALL_FIXTURES=(
     formats
     overwritten
     nopart
+    ext3-indirect
 )
 
 trap rc_cleanup EXIT
@@ -913,6 +914,84 @@ build_nopart() {
     rc_log "wrote $(basename "${img%.img}.expected.json")"
 }
 
+# ext3 with 1 KiB blocks and block maps instead of extents, built by mke2fs -d
+# from a directory, with no mount and no deletion. It exists to check the
+# ext2/ext3 indirect-block path (direct, single, double and triple indirection),
+# holes and symlinks against a foreign implementation; ext4-basic only has
+# extents. All files are present.
+build_ext3_indirect() {
+    local name="ext3-indirect"
+    local img="$OUT_DIR/$name.img" src
+    rc_step "$name (mke2fs -t ext3 -b 1024 -d, block maps)"
+    src="$(mktemp -d)"
+    python3 - "$src" <<'PY'
+import os, random, sys
+root = sys.argv[1]
+rng = random.Random(6)
+def put(rel, data):
+    path = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+# 1 KiB blocks, 256 pointers per block: direct to 12 KiB, single to 268 KiB,
+# double to 65804 KiB, triple beyond.
+put("direct.bin", rng.randbytes(5000))
+put("single.bin", rng.randbytes(100_000))
+put("double.bin", rng.randbytes(1_500_000))
+put("triple.bin", rng.randbytes(67_500_000))
+put("nested/deep/note.txt", b"block maps, not extents\n" * 40)
+put("empty.txt", b"")
+# A file with holes: data, 1 MiB hole, data, trailing hole.
+with open(os.path.join(root, "sparse.bin"), "wb") as f:
+    f.write(rng.randbytes(3000))
+    f.seek(1 << 20)
+    f.write(rng.randbytes(7000))
+    f.truncate(3 << 20)
+os.symlink("direct.bin", os.path.join(root, "fast-link"))
+os.symlink("nested/deep/" + "x" * 80, os.path.join(root, "slow-link"))
+PY
+    rm -f "$img"
+    truncate -s 128M "$img"
+    mke2fs -q -F -t ext3 -b 1024 -L RCEXT3 -d "$src" "$img" \
+        || rc_die "mke2fs -d failed"
+    RC_IMG="$img" RC_SHA="$(rc_sha256 "$img")" python3 - "$src" \
+        > "${img%.img}.expected.json" <<'PY'
+import datetime, hashlib, json, os, sys
+root = sys.argv[1]
+files = {}
+for d, _, names in os.walk(root):
+    for n in names:
+        full = os.path.join(d, n)
+        if os.path.islink(full):
+            continue
+        rel = os.path.relpath(full, root).replace(os.sep, "/")
+        data = open(full, "rb").read()
+        files[rel] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
+                      "kind": "binary", "state": "present"}
+doc = {
+    "fixture": "ext3-indirect", "filesystem": "ext3",
+    "image": os.path.basename(os.environ["RC_IMG"]),
+    "image_sha256": os.environ["RC_SHA"],
+    "image_bytes": os.path.getsize(os.environ["RC_IMG"]),
+    "sector_bytes": 512, "cluster_bytes": 1024, "partitioned": False,
+    "generator": {"script": "build_fixtures.sh", "tool": "mke2fs -t ext3 -b 1024 -d",
+                  "built_utc": datetime.datetime.now(datetime.timezone.utc)
+                               .replace(microsecond=0).isoformat(),
+                  "provenance": json.loads(os.environ["RC_PROVENANCE"])},
+    "notes": "ext3 with block maps (no extents), 1 KiB blocks, populated by mke2fs -d. "
+             "Files reach direct, single, double and triple indirection; sparse.bin has holes. "
+             "Symlinks fast-link (60-byte inline) and slow-link are not in the manifest.",
+    "symlinks": {"fast-link": "direct.bin", "slow-link": "nested/deep/" + "x" * 80},
+    "files": files,
+    "expect": {"deleted_count": 0, "present_count": len(files)},
+}
+json.dump(doc, sys.stdout, indent=2, sort_keys=True)
+sys.stdout.write("\n")
+PY
+    rm -rf "$src"
+    rc_log "wrote $(basename "${img%.img}.expected.json")"
+}
+
 # Shared writer for fixtures where every corpus file counts as unrecoverable
 # through metadata (quick-format).
 write_all_deleted_expected() {
@@ -1061,6 +1140,7 @@ main() {
             formats)         build_formats ;;
             overwritten)     build_overwritten ;;
             nopart)          build_nopart ;;
+            ext3-indirect)   build_ext3_indirect ;;
             *) rc_die "unknown fixture: $f (see --list)" ;;
         esac
     done
