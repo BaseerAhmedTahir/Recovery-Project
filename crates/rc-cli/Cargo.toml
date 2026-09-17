@@ -19,6 +19,7 @@ rc-carve.workspace = true
 rc-index.workspace = true
 rc-session.workspace = true
 rc-score.workspace = true
+rc-preview.workspace = true
 ctrlc = "3"
 anyhow.workspace = true
 clap.workspace = true

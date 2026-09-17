@@ -66,6 +66,16 @@ enum Command {
     /// perfect recall and no value.
     Carve(cmd::carve::Args),
 
+    /// Rate deleted files GREEN, YELLOW or RED, with the reasons for each.
+    Score(cmd::score::Args),
+
+    /// Render a byte range as a PNG preview (image thumbnail or video frame),
+    /// decoded in memory with no temp files.
+    Preview(cmd::preview::PreviewArgs),
+
+    /// Print a byte range as annotated hex.
+    Hex(cmd::preview::HexArgs),
+
     /// Read a few sectors from a real device to prove the unbuffered read path
     /// works on this hardware. Opt-in, never run by CI.
     Smoke(cmd::smoke::Args),
@@ -81,6 +91,9 @@ fn main() {
         Command::Verify(a) => cmd::verify::run(a, cli.json),
         Command::ListDeleted(a) => cmd::list_deleted::run(a, cli.json),
         Command::Carve(a) => cmd::carve::run(a, cli.json),
+        Command::Score(a) => cmd::score::run(a, cli.json),
+        Command::Preview(a) => cmd::preview::preview(a, cli.json),
+        Command::Hex(a) => cmd::preview::hex(a, cli.json),
         Command::Smoke(a) => cmd::smoke::run(a, cli.json),
     };
 

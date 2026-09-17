@@ -1,0 +1,22 @@
+[package]
+name = "rc-preview"
+description = "Previews without temp files: in-memory thumbnails, ffmpeg over pipes, hex views."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc-device.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp", "tiff"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+rc-device = { path = "../rc-device", features = ["test-util"] }
