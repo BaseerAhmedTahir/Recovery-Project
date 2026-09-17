@@ -2,7 +2,27 @@
 
 Running status per SPEC.md section 9. Last updated 2026-09-17.
 
-**Current state: Milestones 1 to 6 complete and verified on Windows.**
+**Current state: Milestones 1 to 6 complete and verified on Windows.
+Milestone 7 complete except the one criterion that needs your phone.**
+
+## Milestone 7 acceptance
+
+> `rc-mobile`: ADB path, iOS backup path, host backup/sync-cache carving,
+> `rc-sqlite-carve`. Recover trashed media from my Android over ADB; parse an
+> iOS backup and list Recently Deleted assets; carve deleted SMS rows from a
+> SQLite fixture.
+
+| Criterion | Result |
+|---|---|
+| Carve deleted SMS rows from a SQLite fixture | Databases written by SQLite 3.50.4, Android `sms` schema: **41/41** surviving deleted rows (rollback journal) and **34/34** (WAL), every column exact, no live or invented rows; `secure_delete=ON` yields 0 of 0 |
+| Parse an iOS backup, list Recently Deleted | Synthetic backup (real SQLite/plists, not made by an iPhone): all 4 trashed assets with original names, dates, originals and derivatives hash-exact; backup unchanged; encrypted backup refused |
+| Recover trashed media from **your** Android over ADB | **Not verified - needs your phone.** Tested against a scripted adb: checklist (unauthorized / locked / unknown / ready), `.trashed-*` discovery with original names and expiry, pull with hashes and manifest. Run `rc android checklist` then `rc android pull --out <dir>` with the phone unlocked and USB debugging authorized |
+
+Also: host backup discovery (`rc host-backups`), `rc ios backups|trashed|extract`,
+and the companion bridge receiver (`rc bridge`, feature `bridge`, protocol in
+`docs/BRIDGE.md`). The dependency audit now also reads the source: sockets may
+appear only in the loopback bridge.
+
 
 ## Milestone 6 acceptance
 

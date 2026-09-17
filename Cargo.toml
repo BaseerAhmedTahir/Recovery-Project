@@ -11,6 +11,8 @@ members = [
     "crates/rc-session",
     "crates/rc-preview",
     "crates/rc-index",
+    "crates/rc-sqlite-carve",
+    "crates/rc-mobile",
     "crates/rc-cli",
     "crates/xtask",
 ]
@@ -65,6 +67,8 @@ rc-score = { path = "crates/rc-score" }
 rc-session = { path = "crates/rc-session" }
 rc-preview = { path = "crates/rc-preview" }
 rc-index = { path = "crates/rc-index" }
+rc-sqlite-carve = { path = "crates/rc-sqlite-carve" }
+rc-mobile = { path = "crates/rc-mobile" }
 
 # Optimise dependencies even in dev/test builds while leaving our own crates
 # unoptimised and debuggable.

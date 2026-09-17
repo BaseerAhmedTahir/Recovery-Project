@@ -7,9 +7,11 @@
 //! make it a build failure rather than a policy people remember.
 //!
 //! The one permitted exception is the localhost/USB link to the companion app,
-//! which SPEC.md section 4.4 confines to `rc-mobile` behind a feature flag.
-//! That crate does not exist yet; when it does, add it to `ALLOWED_NETWORK_OWNERS`
-//! and the audit will still refuse the same crates everywhere else.
+//! which SPEC.md section 4.4 confines to `rc-mobile` behind a feature flag. It
+//! needs no crate at all - it is `std::net` - so a crate audit cannot see it.
+//! The second half of the audit therefore reads the source: socket types may
+//! appear only in `rc-mobile/src/bridge.rs` (and its test), that file must be
+//! behind the `bridge` feature, and every `bind` in it must name loopback.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, ExitCode};
@@ -65,8 +67,25 @@ const FORBIDDEN: &[&str] = &[
 ];
 
 /// Crates permitted to pull in a networking dependency, per SPEC.md 4.4.
-/// Empty until `rc-mobile` lands.
+/// Empty: the bridge uses `std::net`, checked by `audit_sources`.
 const ALLOWED_NETWORK_OWNERS: &[&str] = &[];
+
+/// Source text that means a socket.
+const SOCKET_WORDS: &[&str] = &[
+    "std::net",
+    "TcpStream",
+    "TcpListener",
+    "UdpSocket",
+    "ToSocketAddrs",
+    "WSAStartup",
+    "Win32_Networking",
+];
+
+/// The only files allowed to contain them, relative to the workspace root.
+const SOCKET_FILES: &[&str] = &[
+    "crates/rc-mobile/src/bridge.rs",
+    "crates/rc-mobile/tests/bridge.rs",
+];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -183,9 +202,10 @@ fn audit_deps() -> bool {
     println!("  packages in tree: {}", present.len());
     println!("  forbidden names checked: {}", FORBIDDEN.len());
 
+    let sources_ok = audit_sources();
     if violations.is_empty() {
         println!("  PASS: no networking crate in the dependency tree.");
-        true
+        sources_ok
     } else {
         println!("  FAIL: networking crates found:");
         for (name, owners) in &violations {
@@ -197,6 +217,89 @@ fn audit_deps() -> bool {
              it to rc-mobile behind a feature flag and add that crate to \
              ALLOWED_NETWORK_OWNERS in crates/xtask/src/main.rs."
         );
+        false
+    }
+}
+
+fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+/// Socket use in source, outside the one file allowed it.
+fn audit_sources() -> bool {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    let mut stack = vec![root.join("crates")];
+    for extra in ["gui", "companion-android"] {
+        stack.push(root.join(extra));
+    }
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.filter_map(|e| e.ok()) {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if p.is_dir() {
+                if !matches!(
+                    name.as_str(),
+                    "target" | "node_modules" | "build" | ".gradle"
+                ) {
+                    stack.push(p);
+                }
+            } else if name.ends_with(".rs") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    let mut bad = Vec::new();
+    for f in &files {
+        let rel = f
+            .strip_prefix(&root)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel == "crates/xtask/src/main.rs" {
+            continue; // this file names the words in order to forbid them
+        }
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        let allowed = SOCKET_FILES.contains(&rel.as_str());
+        for (n, line) in text.lines().enumerate() {
+            if SOCKET_WORDS.iter().any(|w| line.contains(w)) && !allowed {
+                bad.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+            }
+            if allowed && line.contains(".bind(") && !line.contains("LOCALHOST") {
+                bad.push(format!(
+                    "{rel}:{}: bind without LOCALHOST: {}",
+                    n + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    // The bridge module must only exist behind its feature.
+    let lib = std::fs::read_to_string(root.join("crates/rc-mobile/src/lib.rs")).unwrap_or_default();
+    if !lib.contains("#[cfg(feature = \"bridge\")]\npub mod bridge;") {
+        bad.push(
+            "crates/rc-mobile/src/lib.rs: `mod bridge` is not behind the bridge feature".into(),
+        );
+    }
+    println!("  source files checked for sockets: {}", files.len());
+    if bad.is_empty() {
+        println!("  PASS: sockets appear only in the loopback bridge, behind its feature.");
+        true
+    } else {
+        println!("  FAIL: socket use outside crates/rc-mobile/src/bridge.rs:");
+        for b in &bad {
+            println!("    {b}");
+        }
         false
     }
 }
@@ -215,13 +318,14 @@ fn ci() -> bool {
             "clippy",
             "--workspace",
             "--all-targets",
+            "--all-features",
             "--",
             "-D",
             "warnings",
         ],
     );
     ok &= audit_deps();
-    ok &= step("cargo test", &["test", "--workspace"]);
+    ok &= step("cargo test", &["test", "--workspace", "--all-features"]);
 
     println!();
     if ok {

@@ -243,8 +243,10 @@ compressor, which is more coverage than a bit-identical copy would give.
 Milestones 1 to 6 deliver device access, imaging, partition discovery,
 deleted-entry recovery for NTFS, FAT12/16/32, exFAT and ext2/3/4 (through the
 JBD2 journal), signature carving with validators, fragment reassembly,
-Green/Yellow/Red scoring, resumable carving and previews. Reassembly is a
-library (`rc-bifrag`) that the CLI does not yet expose.
+Green/Yellow/Red scoring, resumable carving and previews, SQLite deleted-row
+recovery, and logical mobile extraction (Android over adb, iOS backups, host
+backups, the companion bridge). Reassembly is a library (`rc-bifrag`) that the
+CLI does not yet expose.
 
 **APFS and HFS+ are detection only.** Both are recognised and their headers
 read; `rc list-deleted` then says what the volume is and that deleted-file
@@ -588,6 +590,62 @@ malicious input exploited it; that needs an AppContainer on Windows or
 namespaces on Linux, and neither is implemented. On Windows the process is
 placed in the job just after it starts, so a child started in that instant
 would escape the limits. ffmpeg is found on PATH, not bundled.
+
+### 3.12 Mobile: what is verified, and against what
+
+Nothing in Milestone 7 has touched a real phone. No phone is connected to this
+machine and the Android SDK here has no emulator system image.
+
+- **Android over adb** is tested against a *scripted* adb
+  (`testdata/mobile/fake_adb.py`) that prints output in the formats adb and
+  Android's toybox use. That checks rc-mobile's side: the readiness checklist,
+  parsing, finding `.trashed-*` files, pulling, hashing and the manifest. It
+  does not prove a real phone answers the same way. To check on your phone:
+  unlock it, enable USB debugging, accept this computer's key, then
+  `rc android checklist` and `rc android pull --out <new dir>`.
+- **Lock state** is read from `dumpsys window`, whose fields differ between
+  Android versions. When none is recognised the checklist says so and
+  extraction needs `--confirm-unlocked`; a lock screen reported as showing is
+  always refused.
+- **MediaStore's trashed rows**: from Android 11, MediaStore hides trashed items
+  from ordinary queries, and `content query` from the shell may return none of
+  them. Trashed files are therefore found by listing shared storage for
+  `.trashed-*` names, which does not depend on that; the MediaStore rows are
+  reported when the query returns them.
+- **App-private data** (`/data/data`, most chat databases) is not readable over
+  adb without root, and is not attempted. `adb backup` is offered only below
+  API 31 and most apps opt out of it anyway.
+- **iOS backups** are tested against a *synthetic* backup
+  (`testdata/mobile/make_ios_backup.py`): real SQLite and real plists laid out
+  as backups are documented, not made by an iPhone. Column names in
+  `Photos.sqlite` change between iOS versions; ZASSET (iOS 14+) and
+  ZGENERICASSET (earlier) are handled, others fail with a message.
+- **Encrypted iOS backups are refused**, not decrypted: there is no way here to
+  make one to test decryption against. Pre-iOS 10 backups (`Manifest.mbdb`) are
+  refused too. `rc ios backup` needs libimobiledevice's `idevicebackup2`, which
+  is not installed here, and is unverified.
+- **Host backups**: discovery is checked on a fake profile. DriveFS cache chunks
+  are identified by signature only; mapping them back to file names is not
+  implemented.
+- **The bridge** is tested with a Rust client over loopback. Wi-Fi mode is not
+  implemented.
+
+### 3.13 SQLite row recovery
+
+`rc sqlite` recovers deleted rows from freeblocks, unallocated page space,
+freelist pages, and older page versions in a WAL. Measured on databases written
+by SQLite 3.50.4 with Android's `sms` schema: **41 of 41** deleted rows whose
+bytes survive in a rollback-journal database and **34 of 34** in a WAL
+database, every column exact, no live row reported, nothing invented; nothing
+from a `secure_delete=ON` database. Of the 74 rows deleted from the rollback
+database, 33 had already been overwritten by SQLite and are gone.
+
+Not recovered: rows whose payload spilled onto overflow pages (only records that
+fit on their page are carved from free space), rows in freeblocks where the
+four-byte freeblock header reached past the rowid alias column into other
+serial types, `WITHOUT ROWID` tables, and rollback journal files (`-journal`).
+Rows are matched to tables by column count and declared types, so two tables
+with the same shape can be confused. The whole database is read into memory.
 
 ## 4. Test-coverage gaps
 

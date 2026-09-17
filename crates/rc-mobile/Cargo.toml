@@ -1,0 +1,23 @@
+[package]
+name = "rc-mobile"
+description = "Android over adb, iOS backups, host-side phone backups, and the companion bridge."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# The loopback-only receiver for the companion app: the one socket this
+# project permits (SPEC.md 4.4). Off unless asked for.
+bridge = []
+
+[dependencies]
+rc-carve.workspace = true
+rc-sqlite-carve.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+sha1 = "0.10"
+plist = "1"

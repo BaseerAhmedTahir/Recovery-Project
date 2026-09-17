@@ -76,6 +76,28 @@ enum Command {
     /// Print a byte range as annotated hex.
     Hex(cmd::preview::HexArgs),
 
+    /// Recover deleted rows from a SQLite database and its -wal, without
+    /// opening it through SQLite.
+    Sqlite(cmd::sqlite::Args),
+
+    /// Android over adb: checklist, survey of trashed media and caches, pull.
+    /// The phone must be unlocked with USB debugging authorized.
+    #[command(subcommand)]
+    Android(cmd::mobile::AndroidCmd),
+
+    /// iOS backups: list them, list Recently Deleted assets, extract them.
+    #[command(subcommand)]
+    Ios(cmd::mobile::IosCmd),
+
+    /// Find phone backups and sync caches already on this computer.
+    #[command(name = "host-backups")]
+    HostBackups,
+
+    /// Receive files from the companion app over USB (adb reverse, loopback
+    /// only).
+    #[cfg(feature = "bridge")]
+    Bridge(cmd::mobile::BridgeArgs),
+
     /// Read a few sectors from a real device to prove the unbuffered read path
     /// works on this hardware. Opt-in, never run by CI.
     Smoke(cmd::smoke::Args),
@@ -94,6 +116,12 @@ fn main() {
         Command::Score(a) => cmd::score::run(a, cli.json),
         Command::Preview(a) => cmd::preview::preview(a, cli.json),
         Command::Hex(a) => cmd::preview::hex(a, cli.json),
+        Command::Sqlite(a) => cmd::sqlite::run(a, cli.json),
+        Command::Android(c) => cmd::mobile::android(c, cli.json),
+        Command::Ios(c) => cmd::mobile::ios(c, cli.json),
+        Command::HostBackups => cmd::mobile::host_backups(cli.json),
+        #[cfg(feature = "bridge")]
+        Command::Bridge(a) => cmd::mobile::bridge(a, cli.json),
         Command::Smoke(a) => cmd::smoke::run(a, cli.json),
     };
 

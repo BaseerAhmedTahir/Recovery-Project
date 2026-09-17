@@ -6,6 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# The companion-app receiver: a socket bound to 127.0.0.1 (SPEC.md 4.4).
+bridge = ["rc-mobile/bridge"]
+
 [[bin]]
 name = "rc"
 path = "src/main.rs"
@@ -20,6 +24,8 @@ rc-index.workspace = true
 rc-session.workspace = true
 rc-score.workspace = true
 rc-preview.workspace = true
+rc-sqlite-carve.workspace = true
+rc-mobile.workspace = true
 ctrlc = "3"
 anyhow.workspace = true
 clap.workspace = true
