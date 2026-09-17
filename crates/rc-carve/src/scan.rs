@@ -263,10 +263,12 @@ struct Block {
 ///
 /// Buffers cycle between the reader and the workers through `recycle`, so the
 /// number allocated is fixed no matter how large the device is.
+#[allow(clippy::too_many_arguments)]
 fn reader_thread(
     device: Arc<dyn ReadOnlyDevice>,
     start: u64,
     end: u64,
+    read_end: u64,
     block_bytes: usize,
     overlap: usize,
     out: SyncSender<Block>,
@@ -280,8 +282,13 @@ fn reader_thread(
         };
         buf.resize(block_bytes + overlap, 0);
 
+        // Blocks are owned up to `end`, but the overlap that lets a header
+        // straddling a block boundary be seen reads on to `read_end`. For a
+        // segment of a larger scan those differ, and reading overlap only to the
+        // segment's end would miss a header in its last few bytes - making the
+        // result depend on where the scan was split.
         let owned = block_bytes.min((end - pos) as usize);
-        let want = (block_bytes + overlap).min((end - pos) as usize);
+        let want = (block_bytes + overlap).min((read_end - pos) as usize);
 
         let filled = match device.read_bytes_at(pos, &mut buf[..want]) {
             Ok(n) => n,
@@ -330,6 +337,19 @@ struct Hit {
 // the scan
 // ---------------------------------------------------------------------------
 
+/// What one segment of a scan hands to the next.
+///
+/// A scan split into segments - so it can checkpoint, and resume after being
+/// killed - must produce exactly what one uninterrupted scan would. Two things
+/// cross a boundary: the furthest end of a complete file already kept (so a
+/// thumbnail inside a photo that started in an earlier segment is still
+/// suppressed), and the candidate budget.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Carry {
+    pub cover_end: u64,
+    pub candidates: u64,
+}
+
 /// Scan `device` between `start` and `end` for anything the database knows.
 pub fn scan(
     device: Arc<dyn ReadOnlyDevice>,
@@ -338,6 +358,26 @@ pub fn scan(
     end: u64,
     opts: &ScanOptions,
 ) -> crate::Result<ScanResult> {
+    let mut carry = Carry::default();
+    scan_segment(device, db, start, end, end, opts, &mut carry)
+}
+
+/// Scan one segment `[start, end)` of a scan whose range ends at `range_end`.
+///
+/// Headers are claimed only if they begin inside the segment. Everything else
+/// (overlap reads, validation, containment) behaves as it would for the whole
+/// range, so consecutive segments with `carry` threaded through give the same
+/// candidates as one call to [`scan`].
+pub fn scan_segment(
+    device: Arc<dyn ReadOnlyDevice>,
+    db: &SignatureDb,
+    start: u64,
+    end: u64,
+    range_end: u64,
+    opts: &ScanOptions,
+    carry: &mut Carry,
+) -> crate::Result<ScanResult> {
+    let range_end = range_end.max(end);
     let sigs: Vec<&Signature> = match &opts.only {
         None => db.signatures.iter().collect(),
         Some(ids) => db
@@ -406,6 +446,7 @@ pub fn scan(
                 dev,
                 start,
                 end,
+                range_end,
                 opts.block_bytes,
                 overlap,
                 block_tx,
@@ -477,8 +518,9 @@ pub fn scan(
     // broken by signature so the output is deterministic run to run.
     hits.sort_unstable_by_key(|h| (h.offset, h.sig));
 
-    if hits.len() > opts.max_candidates {
-        hits.truncate(opts.max_candidates);
+    let budget = (opts.max_candidates as u64).saturating_sub(carry.candidates) as usize;
+    if hits.len() > budget {
+        hits.truncate(budget);
         stats.truncated = true;
     }
 
@@ -522,7 +564,9 @@ pub fn scan(
             continue;
         };
 
-        let remaining = end.saturating_sub(h.offset);
+        // Bounded by the whole range, not the segment: a file may run on past
+        // the segment it starts in.
+        let remaining = range_end.saturating_sub(h.offset);
         let reachable = sig.max_size.min(remaining);
         let want = reachable.min(opts.validation_window as u64) as usize;
         let capped = reachable > opts.validation_window as u64;
@@ -581,8 +625,9 @@ pub fn scan(
     }
 
     if opts.suppress_contained {
-        stats.suppressed_contained = suppress_contained(&mut candidates);
+        stats.suppressed_contained = suppress_contained(&mut candidates, &mut carry.cover_end);
     }
+    carry.candidates += hits.len() as u64;
 
     stats.elapsed = began.elapsed();
     Ok(ScanResult { candidates, stats })
@@ -604,7 +649,7 @@ pub fn scan(
 /// images and PDFs. Recall went from 228 of 228 to 26. A `Partial` length is a
 /// floor at best and an artifact at worst; only a structurally complete file
 /// has an extent worth trusting against other people's data.
-fn suppress_contained(candidates: &mut Vec<Candidate>) -> u64 {
+fn suppress_contained(candidates: &mut Vec<Candidate>, cover_end: &mut u64) -> u64 {
     // Longest first at each offset, so an outer file is seen before what it
     // contains, and where two candidates cover exactly the same bytes the one
     // that had to match more header wins.
@@ -623,19 +668,18 @@ fn suppress_contained(candidates: &mut Vec<Candidate>) -> u64 {
 
     let mut keep: Vec<Candidate> = Vec::with_capacity(candidates.len());
     let mut dropped = 0u64;
-    // The furthest end among *complete* files kept so far. Because the list is
-    // in offset order, anything ending at or before this lies inside one.
-    let mut cover_end = 0u64;
-
+    // The furthest end among *complete* files kept so far, carried in from any
+    // earlier segment. Because the list is in offset order, anything ending at
+    // or before this lies inside one.
     for c in candidates.drain(..) {
-        if c.length > 0 && c.end() <= cover_end {
+        if c.length > 0 && c.end() <= *cover_end {
             dropped += 1;
             continue;
         }
         // Only a length the file itself established may judge other
         // candidates. A floor is not an extent.
         if c.status == Status::Valid || c.length_established {
-            cover_end = cover_end.max(c.end());
+            *cover_end = (*cover_end).max(c.end());
         }
         keep.push(c);
     }

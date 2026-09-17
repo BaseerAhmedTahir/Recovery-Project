@@ -16,17 +16,38 @@
 
 use crate::output::{human_bytes, print_json};
 use clap::Args as ClapArgs;
-use rc_carve::scan::{scan, ScanOptions, DEFAULT_BLOCK, DEFAULT_VALIDATION_WINDOW};
+use rc_carve::scan::{ScanOptions, DEFAULT_BLOCK, DEFAULT_VALIDATION_WINDOW};
 use rc_carve::SignatureDb;
 use rc_index::CandidateIndex;
+use rc_session::{Outcome, Progress, RecState, Settings};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(ClapArgs)]
 pub struct Args {
     /// Device or image file to carve. Opened read-only.
     source: PathBuf,
+
+    /// Continue an interrupted carve from its checkpoint (the .recstate file
+    /// beside its index). Refuses if the device or the configuration differs.
+    #[arg(long)]
+    resume: Option<PathBuf>,
+
+    /// Target seconds between checkpoints. At most this much work is lost if
+    /// the carve is killed.
+    #[arg(long, default_value_t = 5.0)]
+    checkpoint_secs: f64,
+
+    /// Limit reads to this many MiB per second - gentle on a failing drive.
+    #[arg(long)]
+    max_rate_mib: Option<f64>,
+
+    /// Size of the first checkpoint segment, in MiB; later segments adapt.
+    #[arg(long, default_value_t = 64)]
+    segment_mib: u64,
 
     /// Where to write the candidate index. Defaults to <source>.rcindex.
     #[arg(long)]
@@ -108,6 +129,8 @@ struct CarveReport {
     window_artifact_lengths: u64,
     truncated: bool,
     candidates: u64,
+    /// Byte offset this run continued from, when it was a resume.
+    resumed_from: Option<u64>,
     by_extension: BTreeMap<String, u64>,
     peak_rss_bytes: Option<u64>,
 }
@@ -131,15 +154,18 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
         args.start
     );
 
-    let index_path = args.index.clone().unwrap_or_else(|| {
-        let mut p = args.source.clone();
-        let name = p
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "carve".to_string());
-        p.set_file_name(format!("{name}.rcindex"));
-        p
-    });
+    let index_path = match &args.resume {
+        Some(r) => RecState::load(r)?.index,
+        None => args.index.clone().unwrap_or_else(|| {
+            let mut p = args.source.clone();
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "carve".to_string());
+            p.set_file_name(format!("{name}.rcindex"));
+            p
+        }),
+    };
 
     // The index must not land on the device being carved: writing to a drive
     // you are recovering from overwrites the unallocated data you are trying to
@@ -189,17 +215,79 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
     }
 
     let device: Arc<dyn rc_device::ReadOnlyDevice> = Arc::from(device);
-    let result = scan(Arc::clone(&device), &db, args.start, end, &opts)?;
-    let s = &result.stats;
+    let settings = Settings {
+        opts,
+        signatures_json: match &args.signatures {
+            Some(p) => std::fs::read_to_string(p)?,
+            None => rc_carve::signature::BUILTIN_JSON.to_string(),
+        },
+        checkpoint_every: Duration::from_secs_f64(args.checkpoint_secs.max(0.1)),
+        first_segment: args.segment_mib.max(1) << 20,
+        max_rate: args.max_rate_mib.map(|m| (m * 1048576.0) as u64),
+    };
 
-    let mut index = CandidateIndex::create(&index_path)?;
-    index.extend(result.candidates.iter().cloned())?;
-    index.finish()?;
+    // Ctrl+C stops at the next segment boundary, with everything before it
+    // committed and a checkpoint to resume from.
+    static STOP: AtomicBool = AtomicBool::new(false);
+    let _ = ctrlc::set_handler(|| STOP.store(true, Ordering::SeqCst));
 
-    let mut by_extension: BTreeMap<String, u64> = BTreeMap::new();
-    for c in &result.candidates {
-        *by_extension.entry(c.ext.clone()).or_default() += 1;
+    let mut report_progress = |p: Progress| {
+        if !json {
+            let done = p.next_offset - p.range_start;
+            let all = (p.range_end - p.range_start).max(1);
+            eprint!(
+                "\r  {:>5.1}%  {} candidates  ",
+                done as f64 * 100.0 / all as f64,
+                p.candidates
+            );
+        }
+    };
+    let (outcome, totals) = match &args.resume {
+        Some(r) => rc_session::resume(
+            Arc::clone(&device),
+            &args.source,
+            &db,
+            &settings,
+            r,
+            &STOP,
+            &mut report_progress,
+        )?,
+        None => rc_session::start(
+            Arc::clone(&device),
+            &args.source,
+            &db,
+            &settings,
+            (args.start, end),
+            &index_path,
+            &STOP,
+            &mut report_progress,
+        )?,
+    };
+    if !json {
+        eprintln!();
     }
+    if let Outcome::Stopped {
+        next_offset,
+        recstate,
+    } = &outcome
+    {
+        println!(
+            "stopped at byte {next_offset}; everything before it is committed.\n\
+             resume with:  rc carve {} --resume {}",
+            args.source.display(),
+            recstate.display()
+        );
+        return Ok(());
+    }
+    let s = &totals.stats;
+
+    let index = CandidateIndex::open(&index_path)?;
+    let total_candidates = index.count()?;
+    let mut by_extension: BTreeMap<String, u64> = BTreeMap::new();
+    for (ext, n) in index.count_by_ext()? {
+        by_extension.insert(ext, n);
+    }
+    let shown = index.page(0, args.show)?;
 
     if json {
         return print_json(&CarveReport {
@@ -225,7 +313,8 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
             window_capped: s.window_capped,
             window_artifact_lengths: s.window_artifact_lengths,
             truncated: s.truncated,
-            candidates: result.candidates.len() as u64,
+            candidates: total_candidates,
+            resumed_from: totals.resumed_from,
             by_extension,
             peak_rss_bytes: rc_index::rss::peak_rss_bytes(),
         });
@@ -288,10 +377,10 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
             s.window_artifact_lengths
         );
     }
-    println!(
-        "  candidates emitted        {:>12}",
-        result.candidates.len()
-    );
+    println!("  candidates emitted        {:>12}", total_candidates);
+    if let Some(from) = totals.resumed_from {
+        println!("  (resumed from byte {from}; the counters above cover this run's part only)");
+    }
     if s.truncated {
         println!("  WARNING: the candidate limit was reached; results are incomplete.");
     }
@@ -302,22 +391,15 @@ pub fn run(args: Args, json: bool) -> anyhow::Result<()> {
         println!("  {ext:<10} {n:>10}");
     }
 
-    if args.show > 0 && !result.candidates.is_empty() {
+    if args.show > 0 && !shown.is_empty() {
         println!();
-        println!(
-            "first {} candidates:",
-            args.show.min(result.candidates.len())
-        );
+        println!("first {} candidates:", shown.len());
         println!(
             "  {:>14}  {:>12}  {:<8} {:<8} detail",
             "offset", "length", "ext", "status"
         );
-        for c in result.candidates.iter().take(args.show) {
-            let status = match c.status {
-                rc_carve::Status::Valid => "valid",
-                rc_carve::Status::Partial => "partial",
-                rc_carve::Status::Rejected => "rejected",
-            };
+        for c in &shown {
+            let status = c.status.as_str();
             let detail: String = c.detail.chars().take(60).collect();
             println!(
                 "  {:>14}  {:>12}  {:<8} {:<8} {}",

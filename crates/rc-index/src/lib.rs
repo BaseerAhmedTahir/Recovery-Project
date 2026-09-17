@@ -115,6 +115,7 @@ impl CandidateIndex {
     pub fn open(path: &Path) -> Result<CandidateIndex> {
         let conn = Connection::open(path)?;
         Self::configure(&conn)?;
+        Self::schema(&conn)?;
         Ok(CandidateIndex {
             conn,
             pending: Vec::with_capacity(BATCH),
@@ -160,6 +161,12 @@ impl CandidateIndex {
                  candidate_id INTEGER NOT NULL,
                  key          TEXT    NOT NULL,
                  value        TEXT    NOT NULL
+             );
+             -- The resume checkpoint, committed in the same transaction as the
+             -- candidates it accounts for (rc-session).
+             CREATE TABLE IF NOT EXISTS session (
+                 id         INTEGER PRIMARY KEY CHECK (id = 1),
+                 checkpoint TEXT    NOT NULL
              );",
         )?;
         Ok(())
@@ -202,39 +209,45 @@ impl CandidateIndex {
             return Ok(());
         }
         let tx = self.conn.transaction()?;
-        {
-            let mut ins = tx.prepare_cached(
-                "INSERT INTO candidates
-                   (offset, length, signature_id, ext, category, status,
-                    length_established, detail)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )?;
-            let mut ins_ev = tx.prepare_cached(
-                "INSERT INTO evidence (candidate_id, key, value) VALUES (?1, ?2, ?3)",
-            )?;
-            for c in &self.pending {
-                ins.execute(params![
-                    c.offset as i64,
-                    c.length as i64,
-                    c.signature_id,
-                    c.ext,
-                    c.category.as_str(),
-                    status_str(c.status),
-                    c.length_established as i32,
-                    c.detail,
-                ])?;
-                let id = tx.last_insert_rowid();
-                for (k, v) in &c.evidence {
-                    ins_ev.execute(params![id, k, v])?;
-                }
-            }
-        }
+        insert_all(&tx, &self.pending)?;
         tx.commit()?;
         self.written += self.pending.len() as u64;
         // `clear` keeps the allocation, which is the point: the buffer is
         // reused for the next batch rather than regrown.
         self.pending.clear();
         Ok(())
+    }
+
+    /// Append one segment's candidates and the checkpoint that accounts for
+    /// them, in a single transaction.
+    ///
+    /// This is what makes a kill at any instant safe to resume from: either the
+    /// rows and the checkpoint that says they exist are both committed, or
+    /// neither is. A checkpoint file written separately could lag or lead the
+    /// rows it describes by one segment, and a resume would then duplicate or
+    /// lose that segment.
+    pub fn commit_segment(&mut self, candidates: &[Candidate], checkpoint: &str) -> Result<()> {
+        self.flush()?;
+        let tx = self.conn.transaction()?;
+        insert_all(&tx, candidates)?;
+        tx.execute(
+            "INSERT INTO session (id, checkpoint) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET checkpoint = excluded.checkpoint",
+            params![checkpoint],
+        )?;
+        tx.commit()?;
+        self.written += candidates.len() as u64;
+        Ok(())
+    }
+
+    /// The checkpoint committed with the last segment, if any.
+    pub fn checkpoint(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT checkpoint FROM session WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .optional()?)
     }
 
     /// Rows committed so far. Does not include anything still buffered.
@@ -340,6 +353,34 @@ fn status_str(s: Status) -> &'static str {
 
 /// Category names, kept next to the index so a schema reader does not have to
 /// go looking in `rc-carve`.
+fn insert_all(tx: &rusqlite::Transaction, candidates: &[Candidate]) -> Result<()> {
+    let mut ins = tx.prepare_cached(
+        "INSERT INTO candidates
+           (offset, length, signature_id, ext, category, status,
+            length_established, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+    let mut ins_ev =
+        tx.prepare_cached("INSERT INTO evidence (candidate_id, key, value) VALUES (?1, ?2, ?3)")?;
+    for c in candidates {
+        ins.execute(params![
+            c.offset as i64,
+            c.length as i64,
+            c.signature_id,
+            c.ext,
+            c.category.as_str(),
+            status_str(c.status),
+            c.length_established as i32,
+            c.detail,
+        ])?;
+        let id = tx.last_insert_rowid();
+        for (k, v) in &c.evidence {
+            ins_ev.execute(params![id, k, v])?;
+        }
+    }
+    Ok(())
+}
+
 pub fn category_str(c: Category) -> &'static str {
     c.as_str()
 }
