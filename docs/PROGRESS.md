@@ -1,9 +1,26 @@
 # PROGRESS
 
-Running status per SPEC.md section 9. Last updated 2026-09-12.
+Running status per SPEC.md section 9. Last updated 2026-09-17.
 
-**Current state: Milestones 1, 2, 3 and 4 complete and verified on Windows.
-Stopping here to report, per the working agreement.**
+**Current state: Milestones 1 to 5 complete and verified on Windows.**
+
+## Milestone 5 acceptance
+
+> `rc-score`, `rc-session` pause/resume, `rc-preview`. Classification matches
+> expectations on the overwritten fixture; kill -9 mid-scan and resume to
+> identical results; previews render without temp files.
+
+| Criterion | Result |
+|---|---|
+| Classification on the overwritten fixture | 109 deleted files scored against per-file measured truth: **86/86 GREEN, 5/7 YELLOW, 15/16 RED**, no false alarms. Three misses asserted exactly and explained in LIMITATIONS 3.9 |
+| Kill -9 and resume to identical results | A real `rc carve` killed with TerminateProcess at 96 MiB, resumed from 96 MiB: **all 228 candidates and their evidence identical** to an uninterrupted carve. Resume against another image is refused |
+| Previews without temp files | JPEG/PNG thumbnails in memory, ffmpeg frames from moov-first and moov-last H.264 over pipes; **no file appears** in the temp directory or ffmpeg's working directory |
+
+The overwritten fixture was rebuilt to record what happened to each deleted
+file (`testdata/overmap.py`): it had recorded only a rule, and measured, no file
+was partially overwritten, so YELLOW had never been exercised. The SQLite
+validator now walks pages, which was needed to see a damaged page at all.
+
 
 ## Milestone 4 acceptance
 

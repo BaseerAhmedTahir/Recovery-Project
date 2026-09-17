@@ -240,10 +240,10 @@ compressor, which is more coverage than a bit-identical copy would give.
 
 ### 3.1 Not yet implemented
 
-Milestones 1 to 4 deliver device access, imaging, partition discovery,
+Milestones 1 to 5 deliver device access, imaging, partition discovery,
 deleted-entry recovery for NTFS, FAT12/16/32 and exFAT, signature carving with
-validators, and fragment reassembly. There is still **no** scoring engine, **no**
-session resume, **no** preview and **no** mobile support. Reassembly is a
+validators, fragment reassembly, Green/Yellow/Red scoring, resumable carving and
+previews. There is still **no** mobile support. Reassembly is a
 library (`rc-bifrag`) that the CLI does not yet expose: `rc` has five
 subcommands: `devices`, `image`, `verify`, `smoke`, `list-deleted`, plus
 `carve`.
@@ -510,6 +510,51 @@ The four ways it fails:
 What holds regardless, and is asserted by the test: **no file that fails to
 come back byte-exactly is reported `Valid`.** A wrong file labelled complete is
 the outcome that matters most, because it is the one a user would keep.
+
+### 3.9 Scoring rates on evidence, and some damage leaves none
+
+`rc-score` (Milestone 5) marks a cluster lost only on evidence: allocated to a
+live file, one repeated byte where the format cannot have that, no longer text
+in a text file, or where the format's validator breaks. On the overwritten
+fixture that gives no false alarms (86 of 86 intact files GREEN) and three
+misses, asserted exactly by the test:
+
+- **Random bytes over a format-less file** (a .bin blob) leave no evidence, so
+  the file rates GREEN. Files with no validator say `no-structural-check`.
+- **MP4s that are not H.264 with `avcC`** have nothing in their media to check.
+  The basic corpus's MP4s are like that (random samples, a generator shortcut),
+  so one-cluster and half-file damage to them rates GREEN. The same damage in a
+  real ffmpeg H.264 file is caught and placed (`rc-score/tests/real_media.rs`).
+  HEVC and other codecs are in the same position as the corpus files.
+- **Validators confirm only the first break.** Half of a real H.264 file
+  overwritten rates YELLOW, not RED, because only one lost cluster is
+  confirmed. Pinned in `real_media.rs`.
+
+Also: a deleted file whose MFT record was reused by a later file cannot be
+found through metadata at all, so it is never scored - carving is the only way
+back to it. And TRIM-plus-zeros detection depends on the device reporting TRIM;
+image files report unknown, so the `trimmed` rule never fires on an image.
+
+### 3.10 Resume re-does at most one checkpoint interval
+
+A killed carve resumes from the last committed segment, so up to
+`--checkpoint-secs` (default 5 s) of scanning is repeated. Ctrl+C stops at the
+next segment boundary rather than instantly. Resume refuses a device whose size,
+sector size, serial or first-and-last MiB differ; a disk that has been written
+to *inside* its first and last MiB since the checkpoint would pass that check,
+though writing to a disk under recovery is exactly what not to do. Only `rc
+carve` is resumable; `rc image` resumes from its own map file (Milestone 1) and
+filesystem scans are fast enough not to need it.
+
+### 3.11 ffmpeg's sandbox does not deny filesystem access
+
+Video previews run ffmpeg with a hard timeout and a memory cap (a Windows Job
+Object, setrlimit on Unix) and give it no file paths - input on stdin, output
+on stdout. The operating system does not stop ffmpeg opening files if a
+malicious input exploited it; that needs an AppContainer on Windows or
+namespaces on Linux, and neither is implemented. On Windows the process is
+placed in the job just after it starts, so a child started in that instant
+would escape the limits. ffmpeg is found on PATH, not bundled.
 
 ## 4. Test-coverage gaps
 
