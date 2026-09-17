@@ -1,0 +1,110 @@
+{
+  "_doc": [
+    "The Green/Yellow/Red rules of SPEC.md section 5.7, as data.",
+    "Every rule that can move a score lives here with the reason it gives, so",
+    "a rating can be explained from its inputs and no number that decides one",
+    "is buried in code. A rule has a cap (the most a file it fires on can",
+    "score) and/or a penalty (points off). The score is 100 minus every",
+    "penalty, held under the lowest cap that fired.",
+    "",
+    "The loss policy agreed for Milestone 5: RED when the header cluster or",
+    "half or more of the clusters are lost; YELLOW for smaller losses; GREEN",
+    "only with nothing lost. A file with no structural validator can still be",
+    "GREEN on evidence - intact metadata, no lost cluster - and says so."
+  ],
+
+  "bands": { "green_min": 90, "yellow_min": 45 },
+
+  "rules": {
+    "trimmed": {
+      "cap": 0,
+      "why": "The device reports TRIM and every cluster reads as zero: the controller has discarded the data, and there is nothing to recover."
+    },
+    "header-lost": {
+      "cap": 30,
+      "why": "The file's first cluster is lost, so it cannot be identified or opened as what it was."
+    },
+    "half-or-more-lost": {
+      "cap": 40,
+      "why": "Half or more of the file's clusters are lost."
+    },
+    "clusters-lost": {
+      "cap": 75,
+      "why": "Some of the file's clusters are lost - overwritten, or now allocated to a live file - and the rest survive."
+    },
+    "damage-unlocated": {
+      "cap": 75,
+      "why": "The format's own checks fail (checksums, sample framing), but not at a location that says which clusters are lost."
+    },
+    "unverified-after-break": {
+      "cap": 80,
+      "why": "The format's validator stopped at a break; the clusters after it could not be checked."
+    },
+    "validated-prefix": {
+      "penalty": 0,
+      "why": "The file is larger than the validation limit, so only its beginning was checked; that beginning holds up."
+    },
+    "truncated": {
+      "cap": 80,
+      "why": "The content ends before its own structure does."
+    },
+    "location-guessed": {
+      "cap": 70,
+      "why": "The filesystem kept only the first cluster; the rest of the layout is assumed contiguous."
+    },
+    "location-unknown": {
+      "cap": 20,
+      "why": "Nothing records where the file's content was."
+    },
+    "path-untrusted": {
+      "penalty": 2,
+      "why": "The folder the file was in could not be established."
+    },
+    "no-structural-check": {
+      "penalty": 0,
+      "why": "No validator exists for this format, so the rating rests on metadata and content evidence alone: a cluster overwritten with bytes that look like the file's own would not be seen."
+    }
+  },
+
+  "validator_for_extension": {
+    "jpg": "jpeg", "jpeg": "jpeg", "jpe": "jpeg",
+    "png": "png",
+    "gif": "gif",
+    "bmp": "bmp",
+    "ico": "ico",
+    "tif": "tiff", "tiff": "tiff",
+    "psd": "psd",
+    "webp": "riff_webp",
+    "wav": "riff_wav",
+    "avi": "riff_avi",
+    "aif": "riff_aiff", "aiff": "riff_aiff",
+    "mp4": "mp4", "m4v": "mp4", "m4a": "mp4", "mov": "mp4", "heic": "mp4", "heif": "mp4", "3gp": "mp4",
+    "pdf": "pdf",
+    "zip": "zip", "docx": "zip", "xlsx": "zip", "pptx": "zip", "odt": "zip", "ods": "zip", "jar": "zip", "apk": "zip", "epub": "zip",
+    "sqlite": "sqlite", "db": "sqlite", "sqlite3": "sqlite",
+    "rtf": "rtf",
+    "exe": "pe", "dll": "pe", "sys": "pe",
+    "elf": "elf", "so": "elf",
+    "cab": "cab",
+    "7z": "7z",
+    "rar": "rar",
+    "evtx": "evtx"
+  },
+
+  "text_extensions": [
+    "txt", "md", "csv", "tsv", "log", "json", "xml", "html", "htm", "css", "js",
+    "ini", "cfg", "conf", "yaml", "yml", "srt", "vtt", "eml", "sql", "sh", "py"
+  ],
+
+  "_uniform_doc": [
+    "A cluster of one repeated byte is evidence of loss where the format cannot",
+    "contain one. Compressed image data never can. Zero-filled regions are",
+    "ordinary in databases, containers, uncompressed media and executables -",
+    "SQLite's secure_delete zeroes pages, MP4 pads with free boxes - so for",
+    "those only a non-zero, non-0xFF fill counts. Text may contain a run of a",
+    "printable character (fixed-width padding) but not of anything else. For a",
+    "format the rules do not know, 0x00 and 0xFF runs are treated as ordinary."
+  ],
+  "uniform_never_legal": ["jpeg", "png", "gif", "riff_webp"],
+  "uniform_legal_bytes_otherwise": [0, 255]
+}

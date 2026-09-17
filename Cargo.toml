@@ -7,6 +7,7 @@ members = [
     "crates/rc-fs",
     "crates/rc-carve",
     "crates/rc-bifrag",
+    "crates/rc-score",
     "crates/rc-index",
     "crates/rc-cli",
     "crates/xtask",
@@ -58,6 +59,7 @@ rc-partition = { path = "crates/rc-partition" }
 rc-fs = { path = "crates/rc-fs" }
 rc-carve = { path = "crates/rc-carve" }
 rc-bifrag = { path = "crates/rc-bifrag" }
+rc-score = { path = "crates/rc-score" }
 rc-index = { path = "crates/rc-index" }
 
 # Optimise dependencies even in dev/test builds while leaving our own crates

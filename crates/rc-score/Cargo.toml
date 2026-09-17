@@ -1,0 +1,19 @@
+[package]
+name = "rc-score"
+description = "Green/Yellow/Red confidence rating from an explicit, inspectable input vector."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc-carve.workspace = true
+rc-device.workspace = true
+rc-fs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rc-device = { path = "../rc-device", features = ["test-util"] }
+serde_json.workspace = true

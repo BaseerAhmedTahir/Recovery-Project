@@ -183,20 +183,24 @@ PLAN = [
     # only one of these clusters.
     {"case": "half-random-mp4", "kinds": ["mp4"], "min_clusters": 6,
      "which": "half", "fill": "random", "evidence": "validator"},
+    # The binary cases choose from the end of the sort order: the two files
+    # created after the deletions reuse the lowest free MFT records, and the
+    # first binaries' records are among them - their metadata is gone, so
+    # filesystem recovery cannot find them and a case there is never graded.
     {"case": "half-uniform-binary", "kinds": ["binary"], "min_clusters": 4,
-     "which": "half", "fill": "uniform", "evidence": "uniform"},
+     "which": "half", "fill": "uniform", "evidence": "uniform", "order": "last"},
     # No validator: text must look like text, and no file is one repeated byte.
     {"case": "one-cluster-random-text", "kinds": ["text"], "min_clusters": 3,
      "which": "one-middle", "fill": "random", "evidence": "text"},
     {"case": "one-cluster-uniform-text", "kinds": ["text"], "min_clusters": 3,
      "which": "one-middle", "fill": "uniform", "evidence": "uniform"},
     {"case": "one-cluster-uniform-binary", "kinds": ["binary"], "min_clusters": 4,
-     "which": "one-middle", "fill": "uniform", "evidence": "uniform"},
+     "which": "one-middle", "fill": "uniform", "evidence": "uniform", "order": "last"},
     # Deliberately undetectable: random bytes over random bytes, in a format
     # with no structure. Present so the report shows what "GREEN on evidence"
     # cannot see, rather than a fixture that only contains what it can.
     {"case": "one-cluster-random-binary-no-evidence", "kinds": ["binary"], "min_clusters": 4,
-     "which": "one-middle", "fill": "random", "evidence": "none"},
+     "which": "one-middle", "fill": "random", "evidence": "none", "order": "last"},
 ]
 
 
@@ -235,7 +239,8 @@ def cmd_damage(image, before_json, seed, manifest_path):
         for step in PLAN:
             chosen = None
             skipped = []
-            for rel in sorted(before["files"]):
+            order = sorted(before["files"], reverse=step.get("order") == "last")
+            for rel in order:
                 e = before["files"][rel]
                 if manifest[rel]["kind"] not in step["kinds"]:
                     continue
