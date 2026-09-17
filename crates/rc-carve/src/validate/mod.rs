@@ -33,6 +33,7 @@ pub mod pe;
 pub mod png;
 pub mod riff;
 pub mod sqlite;
+mod sqlite_pages;
 pub mod structured;
 pub mod zip;
 

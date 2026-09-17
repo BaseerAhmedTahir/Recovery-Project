@@ -16,6 +16,12 @@
 //! outside the database, or which claims more free pages than the database
 //! has, means those pages cannot be trusted, and it is better to say that now
 //! than to hand Milestone 7 a corrupt chain.
+//!
+//! And once the whole file is present, its pages are walked
+//! ([`super::sqlite_pages`]): every b-tree from the schema, every overflow chain,
+//! the freelist. A header describes a database; only the pages show whether
+//! they are still its own. A damaged page keeps the header's length, which is
+//! still the file's real size, and reports where the damage is as `damage_at`.
 
 use super::{be32, Outcome};
 
@@ -160,11 +166,47 @@ pub fn validate(d: &[u8]) -> Outcome {
         );
     }
 
-    let mut out = evidence(Outcome::valid(declared));
-    if !notes.is_empty() {
-        out = evidence(Outcome::partial(declared, notes.join("; ")));
+    // Walk the pages. The length stays the header's: a damaged page does not
+    // change how big the database is, and carving needs that length. Where the
+    // damage is goes in `damage_at` instead.
+    let autovacuum = be32(d, 52).unwrap_or(0) != 0;
+    match super::sqlite_pages::walk(
+        &d[..declared as usize],
+        page_size as usize,
+        reserved as usize,
+        page_count,
+        freelist_trunk,
+        freelist_pages,
+        autovacuum,
+    ) {
+        Ok(w) => {
+            let mut out = evidence(Outcome::valid(declared))
+                .with("btree_pages", w.btree_pages)
+                .with("overflow_pages", w.overflow_pages)
+                .with("trees", w.trees);
+            if !notes.is_empty() {
+                out = evidence(Outcome::partial(declared, notes.join("; ")).established());
+            }
+            out
+        }
+        Err(damage) => {
+            let at = (damage.page as u64 - 1) * page_size as u64;
+            evidence(
+                Outcome::partial(
+                    declared,
+                    notes
+                        .iter()
+                        .cloned()
+                        .chain([format!("page {}: {}", damage.page, damage.why)])
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+                .established(),
+            )
+            .with("damage_at", at)
+            .with("bad_page", damage.page)
+        }
     }
-    out
 }
 
 #[cfg(test)]
@@ -172,8 +214,13 @@ mod tests {
     use super::*;
     use crate::validate::Status;
 
-    /// Build a header-accurate SQLite file. Only the header and page 1's type
-    /// byte matter to this validator, so the page bodies are filler.
+    /// Build a structurally valid SQLite file: the header, page 1 as an empty
+    /// schema table, and - when `trunk` names a page - a freelist trunk there.
+    ///
+    /// This used to write only the header and page 1's type byte and leave the
+    /// rest as zeros, because the validator read nothing else. Page 1 with a
+    /// zero cell-content offset was never a valid SQLite page, only one a
+    /// header-only validator could not see into; the page walk can.
     fn db(page_size: u32, pages: u32, freelist: u32, trunk: u32, valid_size: bool) -> Vec<u8> {
         let mut h = vec![0u8; HEADER_LEN];
         h[..16].copy_from_slice(MAGIC);
@@ -200,8 +247,32 @@ mod tests {
         h[96..100].copy_from_slice(&3_050_004u32.to_be_bytes());
 
         let mut v = h;
-        v.push(0x0D); // page 1 is a leaf table b-tree
+        // Page 1's b-tree header: an empty leaf table, whose content area
+        // starts at the end of the page (0 encodes 65536).
+        v.push(0x0D);
+        v.extend_from_slice(&[0, 0]); // no freeblocks
+        v.extend_from_slice(&[0, 0]); // no cells
+        let content = if page_size == 65536 {
+            0
+        } else {
+            page_size as u16
+        };
+        v.extend_from_slice(&content.to_be_bytes());
+        v.push(0); // no fragmented bytes
         v.resize((page_size * pages) as usize, 0x00);
+        if (2..=pages).contains(&trunk) && freelist >= 1 {
+            // A trunk with no further trunks, holding the rest as leaves.
+            let at = ((trunk - 1) * page_size) as usize;
+            v[at + 4..at + 8].copy_from_slice(&(freelist - 1).to_be_bytes());
+            let mut leaf = 2u32;
+            for k in 0..(freelist - 1) as usize {
+                while leaf == trunk {
+                    leaf += 1;
+                }
+                v[at + 8 + 4 * k..at + 12 + 4 * k].copy_from_slice(&leaf.to_be_bytes());
+                leaf += 1;
+            }
+        }
         v
     }
 
@@ -214,6 +285,61 @@ mod tests {
         assert_eq!(out.evidence_of("page_size"), Some("4096"));
         assert_eq!(out.evidence_of("page_count"), Some("6"));
         assert_eq!(out.evidence_of("freelist_pages"), Some("1"));
+    }
+
+    /// The overwritten fixture's case: a page of random bytes in the middle of a
+    /// database whose header is untouched.
+    #[test]
+    fn a_page_that_is_not_its_databases_is_found_and_placed() {
+        let mut f = db(4096, 6, 1, 3, true);
+        assert_eq!(validate(&f).status, Status::Valid);
+        // Make page 2 a real table root the schema names, then damage it.
+        // Schema row in page 1: a leaf table cell holding
+        // (type, name, tbl_name, rootpage=2, sql).
+        let rec: Vec<u8> = {
+            let mut r = vec![6u8, 23, 13, 13, 1, 13];
+            r.extend_from_slice(b"table");
+            r.push(2);
+            r
+        };
+        let cell: Vec<u8> = [vec![rec.len() as u8, 1], rec].concat();
+        let off = 4096 - cell.len();
+        f[off..4096].copy_from_slice(&cell);
+        f[103..105].copy_from_slice(&1u16.to_be_bytes()); // one cell
+        f[105..107].copy_from_slice(&(off as u16).to_be_bytes());
+        f[108..110].copy_from_slice(&(off as u16).to_be_bytes()); // its pointer
+                                                                  // Page 2: an empty leaf table.
+        f[4096] = 0x0D;
+        f[4096 + 5..4096 + 7].copy_from_slice(&4096u16.to_be_bytes());
+        let ok = validate(&f);
+        assert_eq!(ok.status, Status::Valid, "{}", ok.detail);
+        assert_eq!(ok.evidence_of("trees"), Some("2"));
+
+        let mut x = 0x9E3779B9u32;
+        for b in &mut f[4096..8192] {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *b = x as u8;
+        }
+        let bad = validate(&f);
+        assert_eq!(bad.status, Status::Partial, "{}", bad.detail);
+        assert!(!bad.ran_out, "damage is a contradiction");
+        assert!(bad.length_established, "the header still gives the size");
+        assert_eq!(bad.length, 4096 * 6);
+        assert_eq!(bad.evidence_of("bad_page"), Some("2"));
+        assert_eq!(bad.evidence_of("damage_at"), Some("4096"));
+    }
+
+    #[test]
+    fn a_child_pointer_outside_the_database_is_damage() {
+        let mut f = db(4096, 2, 0, 0, true);
+        // Page 1 becomes an interior table page whose right-most child is 9.
+        f[100] = 0x05;
+        f[108..112].copy_from_slice(&9u32.to_be_bytes());
+        let out = validate(&f);
+        assert_eq!(out.status, Status::Partial, "{}", out.detail);
+        assert!(out.detail.contains("page 9"), "{}", out.detail);
     }
 
     #[test]

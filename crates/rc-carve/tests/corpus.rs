@@ -561,6 +561,60 @@ fn check_jpeg_scans_are_decoded(c: &Corpus, label: &str) {
     );
 }
 
+/// The SQLite page walk must actually run on real databases, and reach every
+/// page they hold.
+///
+/// Every SQLite file in the corpus is written by the real SQLite library
+/// through Python's `sqlite3`, so a walk that rejected one would be a walk that
+/// misreads the file format. And a walk that quietly skipped them would leave
+/// every other test passing while the validator stayed header-only.
+fn check_sqlite_pages_are_walked(c: &Corpus, label: &str) {
+    let mut walked = 0usize;
+    let mut wrong = Vec::new();
+    for (rel, s) in &c.files {
+        if s.kind != "sqlite" {
+            continue;
+        }
+        let data = read(&c.dir, rel);
+        let out = validate::validate("sqlite", &data).expect("validator must exist");
+        let num = |k: &str| {
+            out.evidence_of(k)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        let (trees, btree, overflow, pages) = (
+            num("trees"),
+            num("btree_pages"),
+            num("overflow_pages"),
+            num("page_count"),
+        );
+        let free = num("freelist_pages");
+        if out.status != Status::Valid || trees == 0 {
+            wrong.push(format!(
+                "{rel}: {:?}, {trees} tree(s) walked - {}",
+                out.status, out.detail
+            ));
+            continue;
+        }
+        // A healthy database accounts for every page: b-tree, overflow or free.
+        // Pointer-map and lock-byte pages are the exceptions, and these small
+        // non-auto-vacuum files have neither.
+        if btree + overflow + free != pages {
+            wrong.push(format!(
+                "{rel}: walked {btree} b-tree + {overflow} overflow + {free} free pages of {pages}"
+            ));
+        }
+        walked += 1;
+    }
+    eprintln!("  {label}: {walked} SQLite database(s) walked page by page");
+    assert!(
+        wrong.is_empty(),
+        "{label}: SQLite page walk problems:\n{}",
+        wrong.join("\n")
+    );
+    assert!(walked > 0, "{label}: no SQLite file was walked");
+}
+
 /// Width, height and per-component sampling factors from a JPEG's frame header.
 fn jpeg_geometry(d: &[u8]) -> (u64, u64, Vec<(u64, u64)>) {
     let mut i = 2usize;
@@ -609,6 +663,11 @@ fn generated_corpus_produces_no_cross_format_false_positives() {
 #[test]
 fn generated_corpus_lengths_ignore_trailing_data() {
     check_trailing_data_ignored(generated(), "generated corpus");
+}
+
+#[test]
+fn generated_corpus_sqlite_pages_are_walked() {
+    check_sqlite_pages_are_walked(generated(), "generated corpus");
 }
 
 #[test]

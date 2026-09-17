@@ -34,6 +34,7 @@ pub fn validate(d: &[u8]) -> Outcome {
     let mut chunks = 0u64;
     let mut crc_errors = 0u64;
     let mut first_bad_chunk = String::new();
+    let mut first_bad_at = 0usize;
     let mut dims = (0u32, 0u32);
     let mut bit_depth = 0u8;
     let mut colour_type = 0u8;
@@ -100,6 +101,7 @@ pub fn validate(d: &[u8]) -> Outcome {
             crc_errors += 1;
             if first_bad_chunk.is_empty() {
                 first_bad_chunk = format!("{ty_name}@{i}");
+                first_bad_at = i;
             }
             // A bad IHDR CRC means we cannot trust the dimensions we just read,
             // and IHDR is the one chunk whose contents we act on.
@@ -139,6 +141,9 @@ pub fn validate(d: &[u8]) -> Outcome {
                 .with("height", dims.1)
                 .with("chunks", chunks)
                 .with("crc_errors", crc_errors)
+                // Where the damage begins. The length stays the whole file,
+                // which the chunk structure still establishes.
+                .with("damage_at", first_bad_at)
             } else {
                 out
             };
