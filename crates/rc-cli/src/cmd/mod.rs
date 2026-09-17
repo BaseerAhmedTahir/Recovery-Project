@@ -6,6 +6,7 @@ pub mod image;
 pub mod list_deleted;
 pub mod mobile;
 pub mod preview;
+pub mod restore;
 pub mod score;
 pub mod smoke;
 pub mod sqlite;

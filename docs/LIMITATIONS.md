@@ -245,8 +245,10 @@ deleted-entry recovery for NTFS, FAT12/16/32, exFAT and ext2/3/4 (through the
 JBD2 journal), signature carving with validators, fragment reassembly,
 Green/Yellow/Red scoring, resumable carving and previews, SQLite deleted-row
 recovery, and logical mobile extraction (Android over adb, iOS backups, host
-backups, the companion bridge). Reassembly is a library (`rc-bifrag`) that the
-CLI does not yet expose.
+backups, the companion bridge). Recovered files are written out with
+`rc restore` (filesystem entries) and `rc extract` (carved candidates, with
+`--reassemble` for fragmented ones), only through the output sink that refuses
+the device being read.
 
 **APFS and HFS+ are detection only.** Both are recognised and their headers
 read; `rc list-deleted` then says what the volume is and that deleted-file

@@ -1,0 +1,20 @@
+[package]
+name = "rc-restore"
+description = "Write recovered files out through the output sink that refuses the scanned device."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc-device.workspace = true
+rc-fs.workspace = true
+rc-image.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rc-device = { path = "../rc-device", features = ["test-util"] }

@@ -850,6 +850,7 @@ dependencies = [
  "ctrlc",
  "hex",
  "indicatif",
+ "rc-bifrag",
  "rc-carve",
  "rc-device",
  "rc-fs",
@@ -858,6 +859,7 @@ dependencies = [
  "rc-mobile",
  "rc-partition",
  "rc-preview",
+ "rc-restore",
  "rc-score",
  "rc-session",
  "rc-sqlite-carve",
@@ -964,6 +966,20 @@ dependencies = [
  "serde",
  "thiserror",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rc-restore"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rc-device",
+ "rc-fs",
+ "rc-image",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

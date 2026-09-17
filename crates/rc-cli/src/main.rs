@@ -69,6 +69,13 @@ enum Command {
     /// Rate deleted files GREEN, YELLOW or RED, with the reasons for each.
     Score(cmd::score::Args),
 
+    /// Write deleted files out to another disk, with a manifest of hashes and
+    /// ratings. Refuses any destination on the device being read.
+    Restore(cmd::restore::RestoreArgs),
+
+    /// Write carved candidates out, optionally reassembling fragmented ones.
+    Extract(cmd::restore::ExtractArgs),
+
     /// Render a byte range as a PNG preview (image thumbnail or video frame),
     /// decoded in memory with no temp files.
     Preview(cmd::preview::PreviewArgs),
@@ -114,6 +121,8 @@ fn main() {
         Command::ListDeleted(a) => cmd::list_deleted::run(a, cli.json),
         Command::Carve(a) => cmd::carve::run(a, cli.json),
         Command::Score(a) => cmd::score::run(a, cli.json),
+        Command::Restore(a) => cmd::restore::restore(a, cli.json),
+        Command::Extract(a) => cmd::restore::extract(a, cli.json),
         Command::Preview(a) => cmd::preview::preview(a, cli.json),
         Command::Hex(a) => cmd::preview::hex(a, cli.json),
         Command::Sqlite(a) => cmd::sqlite::run(a, cli.json),

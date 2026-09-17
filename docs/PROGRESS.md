@@ -5,6 +5,19 @@ Running status per SPEC.md section 9. Last updated 2026-09-17.
 **Current state: Milestones 1 to 6 complete and verified on Windows.
 Milestone 7 complete except the one criterion that needs your phone.**
 
+## Writing recovered files out
+
+Until now the CLI could find files but not write them. `rc restore` and
+`rc extract` close that, through `rc-restore` and the output sink:
+
+| Check | Result |
+|---|---|
+| `rc restore` ext4-basic | 111/111 deleted files byte-exact |
+| `rc restore` ntfs-basic | 111/111 byte-exact (measured by hand, not in the test) |
+| `rc restore` fat32-basic / exfat-basic | 110/111 each; the miss is the fragmented file, written as `assumed-contiguous` and rated YELLOW |
+| `rc carve` + `rc extract --reassemble` on fragmented-jpeg | the same 4 files as Milestone 4, byte-exact; nothing wrong written |
+| Output onto the image being read | refused |
+
 ## Milestone 7 acceptance
 
 > `rc-mobile`: ADB path, iOS backup path, host backup/sync-cache carving,
