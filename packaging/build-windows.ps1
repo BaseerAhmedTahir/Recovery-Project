@@ -77,13 +77,21 @@ if ($ffmpeg) {
 }
 
 Write-Host "== installer ==" -ForegroundColor Cyan
+# Tauri's CLI writes progress to stderr, which PowerShell would otherwise treat
+# as a fatal error here. Its exit code is what decides.
+$previous = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 Push-Location (Join-Path $root "gui")
-npx tauri build --no-bundle 2>&1 | Out-Null   # ensure the release binary is current
-npx tauri build 2>&1 | Tee-Object -Variable bundleLog | Out-Null
-$setup = Get-ChildItem -Recurse -Filter "*-setup.exe" `
-    (Join-Path $root "gui\src-tauri\target\release\bundle") -ErrorAction SilentlyContinue |
-    Select-Object -First 1
+& npx tauri build --bundles nsis | Out-Host
+$bundled = ($LASTEXITCODE -eq 0)
 Pop-Location
+$ErrorActionPreference = $previous
+$setup = $null
+if ($bundled) {
+    $setup = Get-ChildItem -Recurse -Filter "*-setup.exe" `
+        (Join-Path $root "gui\src-tauri\target\release\bundle") -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+}
 if ($setup) {
     Copy-Item $setup.FullName (Join-Path $dist "RECOVERY-CORE-setup.exe")
     Write-Host "  installer: $(Join-Path $dist 'RECOVERY-CORE-setup.exe')" -ForegroundColor Green
