@@ -27,7 +27,7 @@
 use image::{GenericImageView, ImageFormat, ImageReader, Limits};
 use rc_device::ReadOnlyDevice;
 use std::io::{Cursor, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -130,6 +130,20 @@ fn which(name: &str) -> Option<PathBuf> {
     } else {
         &[""]
     };
+    // Beside this executable first: that is where a packaged copy is dropped,
+    // and it is found even when PATH has none (ffmpeg is not bundled - see
+    // packaging/README.md).
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        for e in exts {
+            let p = dir.join(format!("{name}{e}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             exts.iter()

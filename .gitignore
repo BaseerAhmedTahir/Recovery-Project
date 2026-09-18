@@ -31,3 +31,21 @@ Thumbs.db
 __pycache__/
 *.pyc
 /testdata/fixtures/.lock
+
+# desktop app
+gui/node_modules/
+gui/dist/
+gui/src-tauri/target/
+gui/src-tauri/gen/
+gui/app-icon.png
+
+# companion app
+companion-android/.gradle/
+companion-android/build/
+companion-android/app/build/
+companion-android/local.properties
+
+# packaging output and build scratch
+packaging/dist/
+target/tmp-build/
+

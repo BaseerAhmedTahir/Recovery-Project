@@ -2,8 +2,45 @@
 
 Running status per SPEC.md section 9. Last updated 2026-09-17.
 
-**Current state: Milestones 1 to 6 complete and verified on Windows.
-Milestone 7 complete except the one criterion that needs your phone.**
+**Current state: Milestones 1 to 9 complete on Windows. Two criteria cannot be
+verified on this machine and are marked as such: anything needing a real phone,
+and the installer bundle.**
+
+## Milestone 9 acceptance
+
+> `companion-android`, bridge, packaging, offline audit. APK installs and
+> restores trashed media; bridge streams to desktop; dependency/network audit
+> passes clean.
+
+| Criterion | Result |
+|---|---|
+| APK builds | Debug APK assembled from Kotlin/Compose sources; unit tests pass |
+| APK installs and restores trashed media | **Not verified - needs your phone.** No device or emulator image here. Install with `adb install -r`, and the trash restore goes through Android's own confirmation dialog |
+| Bridge streams to the desktop | **Verified without a phone**: the Kotlin test records the exact bytes the app sends (`protocol-golden.bin`) and the Rust test replays them into the real receiver - both files arrive with the right names, categories and SHA-256, and a quoted name cannot escape the output folder |
+| Dependency/network audit passes clean | `cargo xtask audit` = engine (no networking crate; sockets only in the feature-gated bridge, bound to loopback), GUI (252 packages; tokio present as Tauri's runtime with no networking feature; web view limited to the app and IPC; capabilities `core:default` only), companion app (4 permissions, no service/receiver/provider, no network library, sockets only in `Bridge.kt` with a loopback check) |
+
+Packaging: `packaging\build-windows.ps1` and `packaging\build-android.ps1`,
+which run the audits first and refuse to package if one fails. ffmpeg and adb
+are not bundled (licence and size) and are found beside `rc.exe` if you put
+them there.
+
+## Milestone 8 acceptance
+
+> Tauri GUI: drive selector, virtualized results grid, filters, previews, hex
+> viewer, progress. Grid stays responsive at 10M synthetic rows; all CLI
+> capability reachable.
+
+| Criterion | Result |
+|---|---|
+| Responsive at 10M rows | Backend: a 60-row screen in a **median of 0.8 ms** (1.8 ms filtered, 4.5 ms sorted); p99 2.3/5.0/8.3 ms idle. Frontend: **42 DOM rows** maximum, **200/200** random jumps filled within 60 ms, last row reachable, 16 ms median frames. Filter builds take 7-17 s off the UI thread and say so (LIMITATIONS 3.14) |
+| Drive selector, filters, previews, hex, progress | All present; ratings shown with the reasons behind them; unsupported filesystems named rather than hidden |
+| All CLI capability reachable | Scans, grid, preview, hex and restore call the engine directly; phones, iOS backups, host backups, SQLite, imaging and verification are forms over the `rc` binary with `--json` |
+| The app runs | Built in release and launched: window title "RECOVERY-CORE", 37 MB resident |
+
+The GUI is a separate Cargo workspace because Tauri needs tokio, which the
+engine's audit forbids; `cargo xtask audit-gui` audits that tree on its own
+terms.
+
 
 ## Writing recovered files out
 

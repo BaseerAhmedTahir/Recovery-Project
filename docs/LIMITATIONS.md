@@ -240,7 +240,7 @@ compressor, which is more coverage than a bit-identical copy would give.
 
 ### 3.1 Not yet implemented
 
-Milestones 1 to 6 deliver device access, imaging, partition discovery,
+Milestones 1 to 9 deliver device access, imaging, partition discovery,
 deleted-entry recovery for NTFS, FAT12/16/32, exFAT and ext2/3/4 (through the
 JBD2 journal), signature carving with validators, fragment reassembly,
 Green/Yellow/Red scoring, resumable carving and previews, SQLite deleted-row
@@ -248,7 +248,8 @@ recovery, and logical mobile extraction (Android over adb, iOS backups, host
 backups, the companion bridge). Recovered files are written out with
 `rc restore` (filesystem entries) and `rc extract` (carved candidates, with
 `--reassemble` for fragmented ones), only through the output sink that refuses
-the device being read.
+the device being read. A desktop app (Tauri) wraps the engine, and an Android
+companion app recovers what a phone itself can reach.
 
 **APFS and HFS+ are detection only.** Both are recognised and their headers
 read; `rc list-deleted` then says what the volume is and that deleted-file
@@ -648,6 +649,56 @@ four-byte freeblock header reached past the rowid alias column into other
 serial types, `WITHOUT ROWID` tables, and rollback journal files (`-journal`).
 Rows are matched to tables by column count and declared types, so two tables
 with the same shape can be confused. The whole database is read into memory.
+
+### 3.14 The desktop app: what is measured, and what it hands to the CLI
+
+The grid is measured, at 10 million rows, in two halves.
+
+- **Backend** (`rc-results/tests/ten_million.rs`): a screen of 60 rows comes
+  back in a **median of 0.8 ms** unfiltered, 1.8 ms filtered and 4.5 ms after a
+  sort, with 99th percentiles of 2.3 / 5.0 / 8.3 ms on an idle machine - inside
+  one 16 ms frame. Under load those p99s drift (10-17 ms seen while the machine
+  was compiling), so the test asserts the median against the frame and puts a
+  100 ms ceiling on the p99 rather than being flaky. Building a *filtered* view
+  is a table scan: **7 s** for a band-and-type filter, **17 s** for a text
+  search with a sort, at 10 million rows. That runs off the UI thread and the
+  grid says "Filtering…"; it is not instant and is not presented as such.
+  Inserting 10 million synthetic rows takes 71-114 s.
+- **Frontend** (measured in a browser against a mock backend): at most **42
+  rows** exist in the DOM at any time, every visible row was filled within
+  60 ms on **200 of 200** random jumps, and the last row is reachable. Frames
+  during jumps: 16 ms median, 30 ms at p99. Smooth wheel scrolling: **29 ms
+  median, 59 ms p99** - two to four frames, because each scroll event re-renders
+  the visible rows. Usable, not perfectly smooth.
+
+Browsers cap an element's height near 33 million pixels and 10 million rows is
+280 million, so the scrollbar is scaled: at that size one pixel of scrollbar is
+about eight rows, and the keyboard (arrows, Page Up/Down, Home/End) is the way
+to move row by row.
+
+Screens that call the engine directly: sources and devices, filesystem scan,
+carve, the results grid, ratings and their reasons, preview, hex, and restore.
+Everything else - phones, iOS backups, host backups, SQLite row recovery,
+imaging and verification - is a form that runs the `rc` binary beside the app
+with `--json` and shows what it printed. That is deliberate (the CLI is the
+source of truth) and visible: the tab is named for it.
+
+Not implemented in the GUI: choosing folders through a native file dialog
+(paths are typed), a device tree of partitions to pick from (the whole device
+is scanned), and pausing or resuming a carve from the window (`rc carve
+--resume` does it).
+
+### 3.15 The companion app has never run on a phone
+
+No Android phone and no emulator system image was available on this machine, so
+the companion app is built and unit-tested but has not run on real hardware.
+What *is* checked: the app's bridge protocol against the desktop receiver,
+through a recorded session (`protocol-golden.bin`) that the Kotlin test writes
+and the Rust test replays, so both ends are held to one description.
+
+Unverified on hardware: the MediaStore trash query, the system restore dialog,
+the cache scan, and the USB connection itself. The app needs Android 11 for the
+trash; below that it says so and offers only caches and leftovers.
 
 ## 4. Test-coverage gaps
 

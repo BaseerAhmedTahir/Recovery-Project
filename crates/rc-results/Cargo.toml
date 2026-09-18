@@ -1,0 +1,28 @@
+[package]
+name = "rc-results"
+description = "The GUI's model: a disk-backed results table read a window at a time, and the operations on a row."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc-device.workspace = true
+rc-partition.workspace = true
+rc-fs.workspace = true
+rc-carve.workspace = true
+rc-bifrag.workspace = true
+rc-score.workspace = true
+rc-session.workspace = true
+rc-preview.workspace = true
+rc-index.workspace = true
+rc-restore.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rc-device = { path = "../rc-device", features = ["test-util"] }
+sha2.workspace = true
+hex.workspace = true

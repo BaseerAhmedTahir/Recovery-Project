@@ -45,7 +45,9 @@ pub fn preview(args: PreviewArgs, json: bool) -> anyhow::Result<()> {
 
     let (png, w, h) = if args.video {
         let mut opts = FfmpegOptions::find().ok_or_else(|| {
-            anyhow::anyhow!("ffmpeg was not found on PATH; video previews need it")
+            anyhow::anyhow!(
+                "ffmpeg was not found. Video previews need it: put ffmpeg.exe beside rc.exe \n                 or anywhere on PATH."
+            )
         })?;
         opts.max_dim = args.size;
         let png = video_frame(&bytes, &opts)?;

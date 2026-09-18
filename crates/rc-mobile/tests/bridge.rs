@@ -101,3 +101,64 @@ fn the_receiver_listens_on_loopback_only() {
     assert_eq!(addr.ip().to_string(), "127.0.0.1");
     assert!(TcpStream::connect(("127.0.0.1", rx.port())).is_ok());
 }
+
+/// The companion app's own bytes, received by the desktop.
+///
+/// `companion-android/protocol-golden.bin` is written by the Kotlin unit test
+/// `BridgeProtocolTest` from the app's real sending code. Replaying it here
+/// checks the two implementations against one recorded conversation rather
+/// than against each other's assumptions - no phone or emulator involved.
+/// If the app's bytes change, this fails until the file is regenerated.
+#[test]
+fn the_companion_apps_recorded_session_is_received() {
+    let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../companion-android/protocol-golden.bin");
+    let bytes = std::fs::read(&golden).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e}. Generate it with: cd companion-android && gradle :app:testDebugUnitTest",
+            golden.display()
+        )
+    });
+
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("bridge-golden");
+    let _ = std::fs::remove_dir_all(&out);
+    let rx = Receiver::bind_with_code(0, &out, "123456").unwrap();
+    let port = rx.port();
+    let client = std::thread::spawn(move || {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(&bytes).unwrap();
+        let mut replies = String::new();
+        use std::io::Read;
+        let _ = s.read_to_string(&mut replies);
+        replies
+    });
+    let files = rx.serve(Duration::from_secs(20)).unwrap();
+    let replies = client.join().unwrap();
+
+    assert_eq!(files.len(), 2, "{files:#?}");
+    assert!(replies.starts_with("OK\n"), "{replies:?}");
+    assert_eq!(replies.matches("ACK ").count(), 2, "{replies:?}");
+    assert!(replies.trim_end().ends_with("BYE 2"), "{replies:?}");
+
+    let photo: Vec<u8> = (0..5000u32).map(|i| (i * 7 % 251) as u8).collect();
+    let expect = [
+        (
+            "/storage/emulated/0/DCIM/Camera/.trashed-1726000000-IMG_1.jpg",
+            "trashed",
+            photo,
+        ),
+        (
+            "/storage/emulated/0/Documents/note \"quoted\".txt",
+            "app-media",
+            b"a recovered note\n".to_vec(),
+        ),
+    ];
+    for (f, (path, category, content)) in files.iter().zip(expect) {
+        assert_eq!(f.remote_path, path);
+        assert_eq!(f.category, category);
+        assert_eq!(f.sha256, hex::encode(Sha256::digest(&content)));
+        assert_eq!(std::fs::read(&f.local).unwrap(), content);
+        // The quote in a file name must not have escaped the output directory.
+        assert!(f.local.starts_with(&out));
+    }
+}

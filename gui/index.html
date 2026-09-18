@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RECOVERY-CORE</title>
+  </head>
+  <body>
+    <header>
+      <strong>RECOVERY-CORE</strong>
+      <span class="muted">offline · read-only</span>
+      <nav>
+        <button data-tab="t-results" class="active">Results</button>
+        <button data-tab="t-sources">Sources &amp; scans</button>
+        <button data-tab="t-tools">Phones, SQLite &amp; imaging</button>
+        <button data-tab="t-about">What works</button>
+      </nav>
+    </header>
+    <div id="preview-banner" class="banner" hidden>
+      Browser preview with a mock backend: devices, scans, previews and restore need the desktop app.
+    </div>
+    <main>
+      <section id="t-results">
+        <div class="filters">
+          <input id="f-text" type="text" placeholder="Path contains…" />
+          <label><input type="checkbox" name="band" value="GREEN" /> Green</label>
+          <label><input type="checkbox" name="band" value="YELLOW" /> Yellow</label>
+          <label><input type="checkbox" name="band" value="RED" /> Red</label>
+          <span class="sep"></span>
+          <label><input type="checkbox" name="kind" value="deleted" /> Deleted</label>
+          <label><input type="checkbox" name="kind" value="carved" /> Carved</label>
+          <label><input type="checkbox" name="kind" value="synthetic" /> Synthetic</label>
+          <input id="f-ext" type="text" placeholder="Types: jpg, mp4" size="12" />
+          <input id="f-min" type="number" placeholder="Min KiB" min="0" style="width: 7em" />
+          <span id="result-count" class="muted"></span>
+        </div>
+        <div class="results">
+          <div class="grid-wrap">
+            <div class="grid-head">
+              <div style="width: 84px" data-sort="score">Rating</div>
+              <div style="width: 260px" data-sort="name">Name</div>
+              <div style="width: 420px" data-sort="path">Path</div>
+              <div style="width: 70px" data-sort="ext">Type</div>
+              <div style="width: 100px" data-sort="size">Size</div>
+              <div style="width: 140px" data-sort="modified">Modified</div>
+              <div style="width: 90px" data-sort="kind">Found by</div>
+              <div style="width: 240px">Source</div>
+            </div>
+            <div id="grid"></div>
+          </div>
+          <aside>
+            <div id="detail"><p class="muted">Select a row.</p></div>
+            <div class="hex-head">
+              <h4>Hex</h4>
+              <button id="hex-prev">◀ 256</button><button id="hex-next">256 ▶</button>
+            </div>
+            <pre id="hex"></pre>
+            <div class="restore">
+              <h4>Restore</h4>
+              <p id="sel-count" class="muted">Nothing selected</p>
+              <input id="restore-out" type="text" placeholder="Output folder on a different disk" />
+              <label><input id="restore-reassemble" type="checkbox" checked /> Reassemble fragmented carved files</label>
+              <button id="restore" disabled>Restore selected</button>
+              <p id="restore-status" class="muted"></p>
+            </div>
+          </aside>
+        </div>
+        <div class="footer">
+          <input id="synthetic-n" type="number" value="10000000" min="1" style="width: 9em" />
+          <button id="synthetic">Add synthetic rows</button>
+          <button id="clear">Clear results</button>
+          <span class="muted">Synthetic rows exercise the grid at scale; they have no content.</span>
+        </div>
+      </section>
+
+      <section id="t-sources" hidden>
+        <h2>Source</h2>
+        <p class="muted">
+          Devices are only ever opened read-only. Recovered files are written only to a folder on a
+          different disk; a destination on the device being read is refused.
+        </p>
+        <button id="refresh-devices">Refresh devices</button>
+        <div id="devices"></div>
+        <label class="wide">Device or image file <input id="source" type="text" placeholder="\\.\PhysicalDrive2 or D:\images\card.img" /></label>
+        <div class="row">
+          <button id="scan-fs">Find deleted files (filesystem)</button>
+          <button id="carve">Carve by signature (whole device)</button>
+          <button id="stop" disabled>Stop</button>
+        </div>
+        <progress id="progress" max="1" value="0"></progress>
+        <p id="scan-status" class="muted"></p>
+        <ul id="scan-notes"></ul>
+      </section>
+
+      <section id="t-tools" hidden>
+        <p class="muted">These run the <code>rc</code> command line beside this app and show its output.</p>
+        <div class="tools">
+          <form class="tool" data-cmd="android checklist">
+            <h3>Android: checklist</h3>
+            <input name="--serial" placeholder="Serial (if several phones)" />
+            <button>Check</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="android survey">
+            <h3>Android: list trashed media &amp; caches</h3>
+            <input name="--serial" placeholder="Serial" />
+            <label><input type="checkbox" name="--confirm-unlocked" /> I confirm the phone is unlocked</label>
+            <button>Survey</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="android pull">
+            <h3>Android: pull into a folder</h3>
+            <input name="--out" placeholder="New output folder" required />
+            <input name="--serial" placeholder="Serial" />
+            <label><input type="checkbox" name="--confirm-unlocked" /> I confirm the phone is unlocked</label>
+            <button>Pull</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="ios backups">
+            <h3>iOS: backups on this computer</h3>
+            <button>List</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="ios trashed">
+            <h3>iOS: Recently Deleted in a backup</h3>
+            <input name="backup" placeholder="Backup folder" required />
+            <button>List</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="ios extract">
+            <h3>iOS: extract Recently Deleted</h3>
+            <input name="backup" placeholder="Backup folder" required />
+            <input name="--out" placeholder="New output folder" required />
+            <button>Extract</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="host-backups">
+            <h3>Phone backups &amp; sync caches on this computer</h3>
+            <button>Find</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="sqlite">
+            <h3>SQLite: recover deleted rows</h3>
+            <input name="db" placeholder="Database file (its -wal is read too)" required />
+            <input name="--table" placeholder="Table (optional)" />
+            <button>Recover</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="image">
+            <h3>Image a failing drive</h3>
+            <input name="source" placeholder="Device" required />
+            <input name="--output" placeholder="Output .img on a different disk" required />
+            <button>Image</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="verify">
+            <h3>Verify an image against its hashes</h3>
+            <input name="image" placeholder="Image file" required />
+            <button>Verify</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="bridge">
+            <h3>Receive from the phone app over USB</h3>
+            <input name="--out" placeholder="New output folder" required />
+            <input name="--port" placeholder="Port (default 38300)" />
+            <button>Wait for the phone</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="extract">
+            <h3>Write carved candidates out</h3>
+            <input name="source" placeholder="Device or image" required />
+            <input name="--index" placeholder="Index file from a carve" required />
+            <input name="--out" placeholder="New output folder" required />
+            <label><input type="checkbox" name="--reassemble" checked /> Reassemble fragmented files</label>
+            <button>Extract</button><pre></pre>
+          </form>
+          <form class="tool" data-cmd="list-deleted">
+            <h3>List deleted entries (full detail)</h3>
+            <input name="source" placeholder="Device or image" required />
+            <button>List</button><pre></pre>
+          </form>
+        </div>
+      </section>
+
+      <section id="t-about" hidden>
+        <h2>What works, and what does not</h2>
+        <table class="caps">
+          <tr><td>NTFS, FAT12/16/32, exFAT</td><td class="ok">Deleted files, folder tree, ratings, restore</td></tr>
+          <tr><td>ext2/3/4</td><td class="ok">Deleted files through the JBD2 journal while it still holds them</td></tr>
+          <tr class="off"><td>APFS, HFS+</td><td>Detection only — deleted-file recovery is not implemented. Carve instead.</td></tr>
+          <tr><td>Signature carving</td><td class="ok">44 formats, 28 validated; resumable</td></tr>
+          <tr><td>Fragment reassembly</td><td class="partial">Some fragmented JPEG/MP4/PNG files, not most</td></tr>
+          <tr><td>SSDs with TRIM</td><td class="partial">Deleted data is usually already erased by the drive</td></tr>
+          <tr><td>Android over USB</td><td class="partial">Trashed media and caches; not verified on a real phone yet</td></tr>
+          <tr><td>iOS backups</td><td class="partial">Unencrypted backups only; encrypted ones are refused</td></tr>
+          <tr class="off"><td>Phone internal storage, block level</td><td>Not possible: file-based encryption</td></tr>
+        </table>
+        <p class="muted">The full list is docs/LIMITATIONS.md.</p>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

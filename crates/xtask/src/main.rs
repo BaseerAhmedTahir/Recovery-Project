@@ -93,6 +93,9 @@ fn main() -> ExitCode {
 
     let ok = match cmd {
         "audit-deps" => audit_deps(),
+        "audit-gui" => audit_gui(),
+        "audit-android" => audit_android(),
+        "audit" => audit_deps() && audit_gui() && audit_android(),
         "ci" => ci(),
         "help" | "--help" | "-h" => {
             usage();
@@ -117,7 +120,10 @@ fn usage() {
         "cargo xtask <command>\n\n\
          Commands:\n  \
          audit-deps   Fail if any networking crate is in the dependency tree\n  \
-         ci           fmt check, clippy, audit-deps, and the full test suite\n"
+         audit-gui    The same for the desktop GUI's separate workspace\n  \
+         audit-android  The companion app: permissions, dependencies, sockets\n  \
+         audit        All three audits\n  \
+         ci         fmt check, clippy, audit-deps, and the full test suite\n"
     );
 }
 
@@ -305,6 +311,291 @@ fn audit_sources() -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// audit-gui
+// ---------------------------------------------------------------------------
+
+/// The GUI is its own workspace because Tauri needs tokio. Tokio is allowed
+/// there only as a task runtime: its `net` feature must be off, and every
+/// other forbidden crate stays forbidden. The web view must not be able to
+/// load anything from outside the app, and may use no plugins.
+fn audit_gui() -> bool {
+    println!("== GUI audit (no-network guarantee for the desktop app) ==");
+    let root = workspace_root();
+    let manifest = root.join("gui/src-tauri/Cargo.toml");
+    let mut ok = true;
+
+    // `cargo tree -e normal` is what is actually compiled and shipped:
+    // `cargo metadata` resolves optional dependencies whether or not this
+    // feature selection builds them, and dev- and build-dependencies never
+    // ship. One line per package, as "name version features".
+    let out = match Command::new(cargo())
+        .args([
+            "tree",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}|{f}",
+            "--manifest-path",
+        ])
+        .arg(&manifest)
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Ok(o) => {
+            eprintln!("cargo tree failed: {}", String::from_utf8_lossy(&o.stderr));
+            return false;
+        }
+        Err(e) => {
+            eprintln!("could not run cargo tree: {e}");
+            return false;
+        }
+    };
+    let mut built: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for line in out.lines() {
+        let Some((pkg, feats)) = line.split_once('|') else {
+            continue;
+        };
+        let name = pkg.split_whitespace().next().unwrap_or("").to_string();
+        if name.is_empty() {
+            continue;
+        }
+        built.insert(
+            name,
+            feats
+                .split(',')
+                .filter(|f| !f.is_empty())
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    println!("  packages compiled into the GUI: {}", built.len());
+    for forbidden in FORBIDDEN {
+        let Some(feats) = built.get(*forbidden) else {
+            continue;
+        };
+        if *forbidden == "tokio" {
+            let bad: Vec<&String> = feats
+                .iter()
+                .filter(|f| matches!(f.as_str(), "net" | "full" | "process" | "signal"))
+                .collect();
+            if bad.is_empty() {
+                println!("  tokio is present as Tauri's task runtime, with no networking feature");
+            } else {
+                println!("  FAIL: tokio is built with {bad:?}");
+                ok = false;
+            }
+            continue;
+        }
+        println!("  FAIL: {forbidden} is compiled into the GUI");
+        ok = false;
+    }
+
+    // The web view: a CSP that permits only the app itself and Tauri's IPC.
+    let conf =
+        std::fs::read_to_string(root.join("gui/src-tauri/tauri.conf.json")).unwrap_or_default();
+    let conf: serde_json::Value = serde_json::from_str(&conf).unwrap_or_default();
+    let csp = conf["app"]["security"]["csp"].as_str().unwrap_or("");
+    let allowed_hosts = ["http://ipc.localhost"];
+    let external: Vec<&str> = csp
+        .split([' ', ';'])
+        .filter(|t| t.contains("://") && !allowed_hosts.contains(t))
+        .collect();
+    if !csp.contains("default-src 'self'") || !external.is_empty() {
+        println!("  FAIL: the web view's CSP allows outside content: {csp:?}");
+        ok = false;
+    } else {
+        println!("  CSP: only the app and Tauri IPC");
+    }
+    let caps = std::fs::read_to_string(root.join("gui/src-tauri/capabilities/default.json"))
+        .unwrap_or_default();
+    let caps: serde_json::Value = serde_json::from_str(&caps).unwrap_or_default();
+    let no_perms = Vec::new();
+    let perms: Vec<&str> = caps["permissions"]
+        .as_array()
+        .unwrap_or(&no_perms)
+        .iter()
+        .filter_map(|p| p.as_str())
+        .collect();
+    if perms != ["core:default"] {
+        println!("  FAIL: capabilities grant more than core:default: {perms:?}");
+        ok = false;
+    } else {
+        println!("  capabilities: core:default only (no plugins, no http, no shell)");
+    }
+
+    // The built frontend, if present, must not reach for the network itself.
+    let dist = root.join("gui/dist/assets");
+    if let Ok(rd) = std::fs::read_dir(&dist) {
+        for e in rd.filter_map(|e| e.ok()) {
+            let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+            for word in [
+                "WebSocket(",
+                "XMLHttpRequest",
+                "navigator.sendBeacon",
+                "EventSource(",
+            ] {
+                if text.contains(word) {
+                    println!("  FAIL: {} uses {word}", e.path().display());
+                    ok = false;
+                }
+            }
+        }
+    } else {
+        println!("  note: gui/dist not built; frontend bundle not checked");
+    }
+    println!("  {}", if ok { "PASS" } else { "FAIL" });
+    ok
+}
+
+// ---------------------------------------------------------------------------
+// audit-android
+// ---------------------------------------------------------------------------
+
+/// Permissions the companion app is allowed to ask for (SPEC.md 6.4: "No
+/// ads, no analytics, no network permission except the local bridge").
+const ANDROID_PERMISSIONS: &[&str] = &[
+    "android.permission.READ_MEDIA_IMAGES",
+    "android.permission.READ_MEDIA_VIDEO",
+    "android.permission.READ_EXTERNAL_STORAGE",
+    // Android requires this even for a socket to 127.0.0.1, which is all the
+    // app opens; Bridge.kt refuses any address that is not loopback.
+    "android.permission.INTERNET",
+];
+
+/// Libraries that would give the app a way to talk to a network.
+const ANDROID_FORBIDDEN_DEPS: &[&str] = &[
+    "okhttp",
+    "retrofit",
+    "ktor",
+    "volley",
+    "firebase",
+    "crashlytics",
+    "play-services",
+    "analytics",
+    "appcenter",
+    "sentry",
+    "amplitude",
+    "mixpanel",
+    "grpc",
+    "socket.io",
+];
+
+/// Java/Kotlin API names that reach the network or run in the background.
+const ANDROID_FORBIDDEN_API: &[&str] = &[
+    "HttpURLConnection",
+    "URLConnection",
+    "WebSocket",
+    "DatagramSocket",
+    "ServerSocket",
+    "WebView",
+    "JobScheduler",
+    "WorkManager",
+    "startForegroundService",
+    "BOOT_COMPLETED",
+];
+
+/// The one file allowed to open a socket, and what it must contain.
+const ANDROID_SOCKET_FILE: &str = "Bridge.kt";
+
+fn audit_android() -> bool {
+    println!("== companion app audit (no network beyond the USB bridge) ==");
+    let root = workspace_root().join("companion-android");
+    if !root.is_dir() {
+        println!("  companion-android is not present");
+        return false;
+    }
+    let mut ok = true;
+
+    let manifest =
+        std::fs::read_to_string(root.join("app/src/main/AndroidManifest.xml")).unwrap_or_default();
+    let mut asked = Vec::new();
+    for (i, _) in manifest.match_indices("uses-permission") {
+        let rest = &manifest[i..];
+        if let Some(start) = rest.find("android:name=\"") {
+            let from = i + start + 14;
+            if let Some(end) = manifest[from..].find('"') {
+                asked.push(manifest[from..from + end].to_string());
+            }
+        }
+    }
+    asked.sort();
+    asked.dedup();
+    for p in &asked {
+        if !ANDROID_PERMISSIONS.contains(&p.as_str()) {
+            println!("  FAIL: the app asks for {p}");
+            ok = false;
+        }
+    }
+    println!("  permissions asked: {}", asked.join(", "));
+    for tag in ["<service", "<receiver", "<provider"] {
+        if manifest.contains(tag) {
+            println!("  FAIL: the manifest declares a {tag}> - the app must have no background component");
+            ok = false;
+        }
+    }
+
+    let gradle = std::fs::read_to_string(root.join("app/build.gradle.kts")).unwrap_or_default();
+    for dep in ANDROID_FORBIDDEN_DEPS {
+        if gradle.to_lowercase().contains(dep) {
+            println!("  FAIL: the app depends on {dep}");
+            ok = false;
+        }
+    }
+
+    // Kotlin sources: sockets only in the bridge, and only to loopback.
+    let mut files = Vec::new();
+    let mut stack = vec![root.join("app/src")];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "kt") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    let mut bridge_seen = false;
+    for f in &files {
+        let name = f
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let text = std::fs::read_to_string(f).unwrap_or_default();
+        let is_bridge = name == ANDROID_SOCKET_FILE;
+        bridge_seen |= is_bridge;
+        for api in ANDROID_FORBIDDEN_API {
+            if text.contains(api) {
+                println!("  FAIL: {name} uses {api}");
+                ok = false;
+            }
+        }
+        if !is_bridge && (text.contains("Socket(") || text.contains("java.net")) {
+            println!("  FAIL: {name} opens a socket; only {ANDROID_SOCKET_FILE} may");
+            ok = false;
+        }
+        if is_bridge && !text.contains("isLoopbackAddress") {
+            println!("  FAIL: {name} does not check that the address is loopback");
+            ok = false;
+        }
+    }
+    if !bridge_seen {
+        println!("  FAIL: {ANDROID_SOCKET_FILE} is missing");
+        ok = false;
+    }
+    println!("  Kotlin files checked: {}", files.len());
+    println!("  {}", if ok { "PASS" } else { "FAIL" });
+    ok
+}
+
+// ---------------------------------------------------------------------------
 // ci
 // ---------------------------------------------------------------------------
 
@@ -325,6 +616,8 @@ fn ci() -> bool {
         ],
     );
     ok &= audit_deps();
+    ok &= audit_gui();
+    ok &= audit_android();
     ok &= step("cargo test", &["test", "--workspace", "--all-features"]);
 
     println!();

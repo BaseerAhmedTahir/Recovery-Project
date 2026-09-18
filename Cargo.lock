@@ -983,6 +983,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rc-results"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rc-bifrag",
+ "rc-carve",
+ "rc-device",
+ "rc-fs",
+ "rc-index",
+ "rc-partition",
+ "rc-preview",
+ "rc-restore",
+ "rc-score",
+ "rc-session",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "rc-score"
 version = "0.1.0"
 dependencies = [

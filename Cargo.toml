@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# The GUI is its own workspace (Tauri needs tokio); audited by `cargo xtask audit-gui`.
+exclude = ["gui"]
 members = [
     "crates/rc-device",
     "crates/rc-image",
@@ -14,6 +16,7 @@ members = [
     "crates/rc-sqlite-carve",
     "crates/rc-mobile",
     "crates/rc-restore",
+    "crates/rc-results",
     "crates/rc-cli",
     "crates/xtask",
 ]
@@ -71,6 +74,7 @@ rc-index = { path = "crates/rc-index" }
 rc-sqlite-carve = { path = "crates/rc-sqlite-carve" }
 rc-mobile = { path = "crates/rc-mobile" }
 rc-restore = { path = "crates/rc-restore" }
+rc-results = { path = "crates/rc-results" }
 
 # Optimise dependencies even in dev/test builds while leaving our own crates
 # unoptimised and debuggable.
@@ -101,6 +105,10 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.rc-image]
+opt-level = 2
+
+# The 10-million-row grid benchmark inserts and reads through this crate.
+[profile.dev.package.rc-results]
 opt-level = 2
 
 # Release profile tuned for scanning throughput. Debug assertions stay on in

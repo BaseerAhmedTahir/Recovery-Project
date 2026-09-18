@@ -87,6 +87,12 @@ impl Receiver {
     /// Listen on 127.0.0.1:`port` (0 picks a free port). `out` must be empty or
     /// not exist.
     pub fn bind(port: u16, out: &Path) -> Result<Receiver> {
+        Self::bind_with_code(port, out, &pairing_code())
+    }
+
+    /// As [`Receiver::bind`], with the pairing code given rather than
+    /// generated. For the test that replays a recorded session.
+    pub fn bind_with_code(port: u16, out: &Path, code: &str) -> Result<Receiver> {
         if out.exists() && std::fs::read_dir(out)?.next().is_some() {
             return Err(Error::Destination(format!(
                 "{} is not empty; choose a new directory",
@@ -97,7 +103,7 @@ impl Receiver {
             .map_err(|e| Error::Bridge(format!("cannot listen on 127.0.0.1:{port}: {e}")))?;
         Ok(Receiver {
             listener,
-            code: pairing_code(),
+            code: code.to_string(),
             out: out.to_path_buf(),
         })
     }
