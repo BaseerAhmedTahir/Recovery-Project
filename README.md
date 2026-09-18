@@ -91,8 +91,9 @@ is a read you may not get again.
 
 ## State
 
-Milestones 1–9 of [SPEC.md](SPEC.md) are complete on Windows. Two things
-cannot be verified on the machine this was built on and are marked as such
-throughout: anything that needs a real phone (no device or emulator image
-available), and Tauri's installer bundler. The macOS and Linux device backends
-compile but have not been run.
+Milestones 1–9 of [SPEC.md](SPEC.md) are complete on Windows, and the
+Windows folder, installer and Android APK all build from source here. One thing
+cannot be verified on the machine this was built on and is marked as such
+throughout: anything that needs a real phone, since there is no device and no
+emulator image available. The macOS and Linux device backends compile but have
+not been run.

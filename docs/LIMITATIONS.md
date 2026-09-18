@@ -688,6 +688,15 @@ Not implemented in the GUI: choosing folders through a native file dialog
 is scanned), and pausing or resuming a carve from the window (`rc carve
 --resume` does it).
 
+### 3.14a Packaging is built and run here; installing it is not
+
+`packaginguild-windows.ps1` produces a runnable folder and a 3.3 MB NSIS
+installer, and `build-android.ps1` produces a 9.5 MB debug APK. The folder's
+`rc-gui.exe` has been launched here and the APK's permissions read back from
+the built package. Neither the installer nor the APK has been *installed*: this
+machine's C: drive has under 1 GB free, and no phone is attached. The APK is
+signed with the SDK's debug key; a release APK is left unsigned for you to sign.
+
 ### 3.15 The companion app has never run on a phone
 
 No Android phone and no emulator system image was available on this machine, so

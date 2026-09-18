@@ -2,9 +2,9 @@
 
 Running status per SPEC.md section 9. Last updated 2026-09-17.
 
-**Current state: Milestones 1 to 9 complete on Windows. Two criteria cannot be
-verified on this machine and are marked as such: anything needing a real phone,
-and the installer bundle.**
+**Current state: Milestones 1 to 9 complete on Windows, packaged and installed
+from source. The one criterion that cannot be verified here is anything needing
+a real phone: there is no device and no emulator image on this machine.**
 
 ## Milestone 9 acceptance
 
@@ -20,9 +20,12 @@ and the installer bundle.**
 | Dependency/network audit passes clean | `cargo xtask audit` = engine (no networking crate; sockets only in the feature-gated bridge, bound to loopback), GUI (252 packages; tokio present as Tauri's runtime with no networking feature; web view limited to the app and IPC; capabilities `core:default` only), companion app (4 permissions, no service/receiver/provider, no network library, sockets only in `Bridge.kt` with a loopback check) |
 
 Packaging: `packaging\build-windows.ps1` and `packaging\build-android.ps1`,
-which run the audits first and refuse to package if one fails. ffmpeg and adb
-are not bundled (licence and size) and are found beside `rc.exe` if you put
-them there.
+which run the audits first and refuse to package if one fails. Both produce
+output: `packaging\dist\RECOVERY-CORE\` (rc.exe 7 MB, rc-gui.exe 12 MB, docs,
+and adb and ffmpeg copied from this machine when it has them), a 3.3 MB NSIS
+installer, and a 9.5 MB debug APK whose built manifest carries exactly the four
+declared permissions. ffmpeg and adb are not bundled by default (licence and
+size) and are found beside `rc.exe` when you put them there.
 
 ## Milestone 8 acceptance
 
