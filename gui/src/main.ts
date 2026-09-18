@@ -406,11 +406,47 @@ function listRow(row: Row | undefined, _index: number, selected: boolean): strin
   </div>`;
 }
 
+/** Why a file is rated the way it is, in the words the engine recorded. */
+async function showDetail(row: Row) {
+  const h = health(row);
+  const folder = row.path.includes("/") ? row.path.slice(0, row.path.lastIndexOf("/")) : "";
+  $("#detail").hidden = false;
+  $("#detail-body").innerHTML = `
+    <h3>${escapeHtml(row.name)}</h3>
+    <span class="badge ${h.cls}">${h.label}</span>
+    <div id="detail-preview"></div>
+    <dl class="kv">
+      <dt>Was in</dt><dd>${escapeHtml(folder || "the drive's top folder")}</dd>
+      <dt>Size</dt><dd>${bytes(row.size)}</dd>
+      ${row.modified ? `<dt>Changed</dt><dd>${when(row.modified)}</dd>` : ""}
+      <dt>Found by</dt><dd>${row.kind === "carved" ? "its contents (the folder record is gone)" : "the drive's own record of deleted files"}</dd>
+    </dl>
+    ${
+      row.reasons
+        ? `<div class="why">${escapeHtml(row.reasons)}</div>`
+        : `<div class="why">Nothing was found wrong with it: the record is complete and its
+             contents are where they should be.</div>`
+    }`;
+  const got = thumbs.get(row.id);
+  if (got) $("#detail-preview").innerHTML = `<img src="${got}" alt="" />`;
+  else if (PICTURE_EXTS.has(row.ext)) {
+    try {
+      const png = await call<string | null>("thumbnail", { id: row.id });
+      if (png) $("#detail-preview").innerHTML = `<img src="${png}" alt="" />`;
+    } catch {
+      /* a file that will not decode simply shows no picture */
+    }
+  }
+}
+
+$("#detail-close").addEventListener("click", () => ($("#detail").hidden = true));
+
 const results = new ResultsView($("#results"), {
   lineHeight: 190,
   perLine: 5,
   render: tile,
   emptyHtml: `${icon("empty")}<b>Nothing here yet</b><span class="faint">Run a scan, or widen the filter.</span>`,
+  onOpen: (row) => showDetail(row),
   onSelectionChange: (n) => {
     $("#selection").textContent = n ? `${n.toLocaleString()} selected` : "Nothing selected";
     $<HTMLButtonElement>("#recover").disabled = n === 0;

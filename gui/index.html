@@ -254,7 +254,13 @@
             <button id="view-tiles" class="icon-btn" title="Picture grid"><svg class="i"><use href="#i-grid" /></svg></button>
             <button id="view-list" class="icon-btn" title="List"><svg class="i"><use href="#i-list" /></svg></button>
           </div>
-          <div class="results-body" id="results"></div>
+          <div class="results-row">
+            <div class="results-body" id="results"></div>
+            <aside class="card pad detail" id="detail" hidden>
+              <button class="ghost icon-btn detail-close" id="detail-close" title="Close">✕</button>
+              <div id="detail-body"></div>
+            </aside>
+          </div>
           <div class="footbar">
             <button id="select-all">Select all</button>
             <button id="select-none" class="ghost">Clear</button>

@@ -22,6 +22,7 @@ export interface ViewOptions {
   /** Markup for one item. `index` is its position in the view. */
   render: (row: Row | undefined, index: number, selected: boolean) => string;
   onSelectionChange?: (count: number) => void;
+  /** Called with the row that was clicked, for a details panel. */
   onOpen?: (row: Row) => void;
   emptyHtml?: string;
 }
@@ -208,6 +209,10 @@ export class ResultsView {
     this.focused = index;
     this.render();
     this.opts.onSelectionChange?.(this.selected.size);
+    // Clicking also shows what is known about that file; ticking it and
+    // looking at it are the same gesture, as in the tools people know.
+    const row = this.cache.get(index);
+    if (row) this.opts.onOpen?.(row);
   }
 
   private key(e: KeyboardEvent) {

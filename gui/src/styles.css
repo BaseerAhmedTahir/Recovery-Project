@@ -950,3 +950,57 @@ details.more .rows {
 .mirror .inline input {
   flex: 1;
 }
+
+/* ------------------------------------------------------------- details --- */
+
+.results-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+}
+.results-row .results-body {
+  flex: 1;
+  min-width: 0;
+}
+aside.detail {
+  width: 330px;
+  flex: none;
+  overflow: auto;
+  position: relative;
+}
+aside.detail[hidden] {
+  display: none;
+}
+.detail-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.detail h3 {
+  font-size: var(--t-md);
+  word-break: break-all;
+  padding-right: 28px;
+}
+.detail img {
+  width: 100%;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  margin: 10px 0;
+}
+.detail .why {
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-size: var(--t-sm);
+  white-space: pre-wrap;
+  color: var(--muted);
+  margin-top: 10px;
+}
+@media (max-width: 1100px) {
+  aside.detail {
+    width: 280px;
+  }
+}
