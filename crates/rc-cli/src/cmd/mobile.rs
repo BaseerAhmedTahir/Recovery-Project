@@ -18,6 +18,67 @@ pub enum AndroidCmd {
     Survey(Target),
     /// Pull everything `survey` lists into a new directory, with a manifest.
     Pull(PullArgs),
+    /// Save a picture of the phone's screen (for a broken or dead display).
+    Screen(ScreenArgs),
+    /// Tap the phone's screen at a point, as a finger would.
+    Tap(TapArgs),
+    /// Drag across the phone's screen: a swipe, or a slow drag.
+    Swipe(SwipeArgs),
+    /// Press a named key: power, home, back, enter, up, down, ...
+    Key(KeyArgs),
+    /// Type text on the phone - your own unlock code, or into a text box.
+    Type(TypeArgs),
+}
+
+#[derive(ClapArgs)]
+pub struct ScreenArgs {
+    #[command(flatten)]
+    target: Target,
+    /// Where to write the PNG.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+#[derive(ClapArgs)]
+pub struct TapArgs {
+    #[command(flatten)]
+    target: Target,
+    x: u32,
+    y: u32,
+}
+
+#[derive(ClapArgs)]
+pub struct SwipeArgs {
+    #[command(flatten)]
+    target: Target,
+    x1: u32,
+    y1: u32,
+    x2: u32,
+    y2: u32,
+    /// How long the drag takes, in milliseconds.
+    #[arg(long, default_value_t = 250)]
+    ms: u32,
+}
+
+#[derive(ClapArgs)]
+pub struct KeyArgs {
+    #[command(flatten)]
+    target: Target,
+    /// One of: power, wake, home, back, menu, enter, delete, up, down, left,
+    /// right, volume-up, volume-down.
+    name: String,
+}
+
+#[derive(ClapArgs)]
+pub struct TypeArgs {
+    #[command(flatten)]
+    target: Target,
+    /// The text to type. For an unlock code, this is your own code: nothing
+    /// here can guess or bypass one.
+    text: String,
+    /// Press Enter afterwards.
+    #[arg(long)]
+    then_enter: bool,
 }
 
 #[derive(ClapArgs)]
@@ -66,6 +127,33 @@ fn print_checklist(c: &Checklist) {
     for p in &c.problems {
         println!("  - {p}");
     }
+}
+
+/// adb for the screen commands. Unlike [`ready_adb`] this does **not** require
+/// the phone to be unlocked: showing the lock screen and typing your own code
+/// into it is the point when the display is broken. It still requires USB
+/// debugging authorized for this computer, which only the phone's holder can
+/// grant.
+fn control_adb(t: &Target) -> anyhow::Result<Adb> {
+    let adb = Adb::find();
+    let c = checklist(adb.as_ref(), t.serial.as_deref());
+    if !c.adb_found {
+        anyhow::bail!("adb was not found; install Android platform-tools or put adb beside rc");
+    }
+    if !c.device_connected {
+        anyhow::bail!("no phone is connected over USB");
+    }
+    if !c.authorized {
+        print_checklist(&c);
+        anyhow::bail!(
+            "this computer is not authorized on the phone. USB debugging must have been \
+             switched on and this computer accepted - a phone that was never set up that \
+             way cannot be reached"
+        );
+    }
+    Ok(adb
+        .expect("authorized implies adb")
+        .with_serial(c.serial.as_deref().unwrap_or("")))
 }
 
 fn ready_adb(t: &Target, json: bool) -> anyhow::Result<Option<(Adb, Checklist)>> {
@@ -128,6 +216,64 @@ pub fn android(cmd: AndroidCmd, json: bool) -> anyhow::Result<()> {
                         .map(|n| format!("  (was {n})"))
                         .unwrap_or_default()
                 );
+            }
+            Ok(())
+        }
+        AndroidCmd::Screen(a) => {
+            let adb = control_adb(&a.target)?;
+            let png = rc_mobile::screen::screenshot(&adb)?;
+            let size = rc_mobile::screen::screen_size(&adb)?;
+            if let Some(parent) = a.out.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+            std::fs::write(&a.out, &png)?;
+            if json {
+                print_json(&serde_json::json!({
+                    "out": a.out, "bytes": png.len(),
+                    "width": size.width, "height": size.height,
+                }))
+            } else {
+                println!(
+                    "{} ({} bytes), screen {}x{}",
+                    a.out.display(),
+                    png.len(),
+                    size.width,
+                    size.height
+                );
+                Ok(())
+            }
+        }
+        AndroidCmd::Tap(a) => {
+            let adb = control_adb(&a.target)?;
+            let size = rc_mobile::screen::screen_size(&adb)?;
+            rc_mobile::screen::tap(&adb, size, a.x, a.y)?;
+            Ok(())
+        }
+        AndroidCmd::Swipe(a) => {
+            let adb = control_adb(&a.target)?;
+            let size = rc_mobile::screen::screen_size(&adb)?;
+            rc_mobile::screen::swipe(&adb, size, (a.x1, a.y1), (a.x2, a.y2), a.ms)?;
+            Ok(())
+        }
+        AndroidCmd::Key(a) => {
+            let adb = control_adb(&a.target)?;
+            let k = rc_mobile::screen::Key::parse(&a.name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown key {:?}; one of: {}",
+                    a.name,
+                    rc_mobile::screen::Key::ALL.join(", ")
+                )
+            })?;
+            rc_mobile::screen::key(&adb, k)?;
+            Ok(())
+        }
+        AndroidCmd::Type(a) => {
+            let adb = control_adb(&a.target)?;
+            rc_mobile::screen::type_text(&adb, &a.text)?;
+            if a.then_enter {
+                rc_mobile::screen::key(&adb, rc_mobile::screen::Key::Enter)?;
             }
             Ok(())
         }

@@ -166,6 +166,16 @@ pub fn lock_fixtures(dir: &std::path::Path) -> std::io::Result<FixtureLock> {
     Ok(FixtureLock { _file: file })
 }
 
+/// Register a scan source the way opening a device does, for tests of the
+/// output sink's refusal that cannot open the real device (a raw volume needs
+/// Administrator). Registering only ever makes the sink refuse more.
+pub fn register_source(
+    id: crate::geometry::DeviceId,
+    path: &std::path::Path,
+) -> crate::ScanSourceGuard {
+    crate::ScanSourceGuard::register(id, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

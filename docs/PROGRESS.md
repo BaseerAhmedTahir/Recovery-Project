@@ -6,6 +6,18 @@ Running status per SPEC.md section 9. Last updated 2026-09-17.
 from source. The one criterion that cannot be verified here is anything needing
 a real phone: there is no device and no emulator image on this machine.**
 
+## After milestone 9
+
+Added because the interface asked for them, each with tests:
+
+| What | Where it stands |
+|---|---|
+| Drive letters (C:, D:, E:) as scan sources | Listed with label, filesystem, free space and a usage bar, no elevation needed to list. Reading one needs Administrator. Volume length and the NTFS backup boot sector are handled (LIMITATIONS 3.16) |
+| "Scan a specific folder" | A whole-drive read narrowed to files whose recorded path was inside the folder, tested on the ext4 fixture including the `photo` vs `photos/` case |
+| Writing-onto-the-source guard for volumes | A scanned volume is registered under its `\\?\Volume{GUID}` name; `rc-image/tests/volume_guard.rs` proves `D:\out` is refused while `\\.\D:` is scanned, and that another partition stays allowed. This was a real hole: before it, that write was permitted |
+| A phone's screen, for a broken display | `rc android screen/tap/swipe/key/type` and a panel in the app: the display arrives as a PNG, clicks and typing go back over the cable. Parsers and bounds are tested; no real phone here (LIMITATIONS 3.17) |
+| Lock-screen bypass, FRP, firmware flashing | **Refused, permanently.** The reasons are in LIMITATIONS 3.17 and the README |
+
 ## Milestone 9 acceptance
 
 > `companion-android`, bridge, packaging, offline audit. APK installs and

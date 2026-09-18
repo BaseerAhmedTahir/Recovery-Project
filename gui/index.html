@@ -116,14 +116,27 @@
             <p class="muted" id="where-sub">Choose the drive, memory card or USB stick to search.</p>
           </div>
           <div id="elevation-notice"></div>
-          <div id="device-list" class="rows"></div>
+          <h3 class="section-title">Drives</h3>
+          <div id="volume-list" class="rows"></div>
+          <div class="inline">
+            <button id="pick-folder"><svg class="i"><use href="#i-folder" /></svg> A specific folder…</button>
+            <button id="pick-image"><svg class="i"><use href="#i-file" /></svg> A disk image file…</button>
+            <span class="grow"></span>
+            <button id="refresh-devices" class="ghost">Refresh</button>
+          </div>
           <label class="check">
             <input type="checkbox" id="deep" checked />
             Deep scan: also search every sector for files the drive has forgotten (slower, finds more)
           </label>
+          <details class="more">
+            <summary>Whole disks — for a drive that was formatted, or shows no letter</summary>
+            <p class="faint">
+              A whole disk includes every partition on it, and also finds partitions that were
+              deleted. Use this when the drive letter is gone or Windows asks to format it.
+            </p>
+            <div id="device-list" class="rows"></div>
+          </details>
           <div class="inline">
-            <button id="refresh-devices" class="ghost">Refresh list</button>
-            <button id="pick-image" class="ghost">Use a disk image file…</button>
             <span class="grow"></span>
             <button id="where-back" class="ghost"><svg class="i"><use href="#i-back" /></svg> Back</button>
           </div>
@@ -153,6 +166,42 @@
             <pre class="out" id="phone-out" hidden></pre>
           </div>
           <div class="card pad stack">
+            <h3>Broken screen, or the touch does not work</h3>
+            <p class="muted">
+              The phone's screen is shown here and your clicks are sent back over the cable, so
+              you can unlock it with your own code and get the files off. This needs USB
+              debugging to have been switched on before the screen broke; if it was not, a USB
+              mouse through an OTG adapter is the way in, and costs very little.
+            </p>
+            <div class="inline">
+              <button id="mirror-start" class="primary">Show the phone's screen</button>
+              <label class="check"><input type="checkbox" id="mirror-live" /> Keep updating</label>
+              <span class="grow"></span>
+              <span id="mirror-status" class="faint"></span>
+            </div>
+            <div class="mirror" id="mirror" hidden>
+              <img id="mirror-img" alt="the phone's screen" />
+              <div class="mirror-keys">
+                <button data-key="back" title="Back">‹</button>
+                <button data-key="home" title="Home">○</button>
+                <button data-key="menu" title="Recent apps">▭</button>
+                <button data-key="power" title="Power">⏻</button>
+                <button data-key="up" title="Up">↑</button>
+                <button data-key="down" title="Down">↓</button>
+                <button data-key="enter" title="Enter">⏎</button>
+                <button data-key="delete" title="Backspace">⌫</button>
+              </div>
+              <div class="inline">
+                <input id="mirror-text" type="text" placeholder="Your unlock code, or text to type" />
+                <button id="mirror-type">Type it</button>
+              </div>
+              <p class="faint">
+                Click the picture to tap there; drag across it to swipe. This types the code you
+                enter - it cannot guess one, and a wrong code repeated can erase the phone.
+              </p>
+            </div>
+          </div>
+          <div class="card pad stack">
             <h3>iPhone backup on this computer</h3>
             <div class="inline">
               <button id="ios-find" class="primary">Find backups</button>
@@ -172,6 +221,7 @@
             <h1 id="scan-title">Looking for your files…</h1>
             <p class="muted" id="scan-source"></p>
           </div>
+          <div class="notice" id="scan-scope" hidden></div>
           <div class="card pad stack">
             <div class="bar" id="scan-bar"><i style="width: 0%"></i></div>
             <div class="inline">
@@ -198,6 +248,7 @@
             <button class="chip" data-cat="audio" aria-pressed="false">Audio</button>
             <button class="chip" data-cat="everything" aria-pressed="true">Everything</button>
             <input id="search" class="search" type="text" placeholder="Search by name…" />
+            <span id="folder-chip" class="badge plain" hidden></span>
             <span class="grow" style="flex: 1"></span>
             <span id="count" class="muted"></span>
             <button id="view-tiles" class="icon-btn" title="Picture grid"><svg class="i"><use href="#i-grid" /></svg></button>

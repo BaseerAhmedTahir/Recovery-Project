@@ -36,6 +36,7 @@ pub mod error;
 pub mod geometry;
 pub mod readonly;
 pub mod registry;
+pub mod volumes;
 
 /// Fault-injecting device wrapper for tests. Behind a feature flag because
 /// [`ReadOnlyDevice`] is sealed, so a test double cannot live in a consuming
@@ -51,6 +52,7 @@ pub use registry::{
     is_registered_source, registered_sources, registered_sources_detailed, ScanSource,
     ScanSourceGuard,
 };
+pub use volumes::{enumerate_volumes, VolumeInfo};
 
 use std::path::Path;
 

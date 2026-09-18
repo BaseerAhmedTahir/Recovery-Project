@@ -78,6 +78,13 @@ pub struct Row {
 pub struct Filter {
     /// Substring of the path, case-insensitive.
     pub text: String,
+    /// Only rows whose original path lies inside this folder (relative to the
+    /// volume's root, `/`-separated, case-insensitive). How "scan a folder"
+    /// works: a deleted file is no longer in any folder on disk, so the whole
+    /// volume is read and the rows are narrowed to where the files used to be.
+    /// Carved rows have no original path and never match.
+    #[serde(default)]
+    pub folder: String,
     pub bands: Vec<String>,
     pub kinds: Vec<String>,
     pub exts: Vec<String>,
@@ -90,6 +97,7 @@ pub struct Filter {
 impl Filter {
     fn is_identity(&self) -> bool {
         self.text.is_empty()
+            && self.folder.is_empty()
             && self.bands.is_empty()
             && self.kinds.is_empty()
             && self.exts.is_empty()
@@ -254,6 +262,15 @@ impl Store {
             sql.push_str(" AND instr(lower(path), ?) > 0");
             args.push(f.text.to_lowercase().into());
         }
+        let folder = normalise_folder(&f.folder);
+        if !folder.is_empty() {
+            // A prefix compare rather than LIKE, so `_` and `%` in folder
+            // names mean themselves; kind = 'deleted' because a carved row's
+            // path is only its extension directory.
+            sql.push_str(" AND kind = 'deleted' AND substr(lower(path), 1, ?) = ?");
+            args.push((folder.chars().count() as i64).into());
+            args.push(folder.into());
+        }
         for (col, vals) in [("band", &f.bands), ("kind", &f.kinds), ("ext", &f.exts)] {
             if !vals.is_empty() {
                 sql.push_str(&format!(
@@ -361,6 +378,22 @@ impl Store {
 /// A row's source device, content offset and length, and what kind of row it
 /// is: everything the operations below need that the grid does not show.
 type RowDetail = (String, Option<u64>, Option<u64>, Option<Detail>);
+
+/// `Photos\2024\` or `/photos/2024` -> `photos/2024/`: lower case, `/`
+/// separators, no leading slash, one trailing slash so `photos/2024` does not
+/// also match `photos/20245`. Empty for the volume's root.
+fn normalise_folder(folder: &str) -> String {
+    let parts: Vec<String> = folder
+        .split(['/', '\\'])
+        .filter(|p| !p.is_empty() && *p != ".")
+        .map(|p| p.to_lowercase())
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", parts.join("/"))
+    }
+}
 
 /// Progress of a scan, for the GUI's progress bar. `total` is 0 when the size
 /// of the work is not known (a filesystem scan): the bar is then shown as

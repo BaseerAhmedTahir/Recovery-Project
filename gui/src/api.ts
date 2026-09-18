@@ -24,6 +24,8 @@ export interface Row {
 
 export interface Filter {
   text: string;
+  /** Only files that used to be inside this folder (relative to the drive). */
+  folder?: string;
   bands: string[];
   kinds: string[];
   exts: string[];
@@ -48,6 +50,19 @@ export interface Device {
   note: string | null;
   removable: boolean | null;
   rotational: boolean | null;
+}
+
+export interface Volume {
+  letter: string;
+  device_path: string;
+  mount: string;
+  label: string | null;
+  filesystem: string | null;
+  total_bytes: number;
+  free_bytes: number;
+  removable: boolean;
+  readable: boolean;
+  note: string | null;
 }
 
 export interface Written {
@@ -127,10 +142,10 @@ export async function call<T>(cmd: string, args: Record<string, unknown> = {}): 
 }
 
 /** The system folder chooser. */
-export async function pickFolder(): Promise<string | null> {
+export async function pickFolder(title = "Save recovered files in"): Promise<string | null> {
   if (inTauri()) {
     const dialog = await import("@tauri-apps/plugin-dialog");
-    const chosen = await dialog.open({ directory: true, multiple: false, title: "Save recovered files in" });
+    const chosen = await dialog.open({ directory: true, multiple: false, title });
     return typeof chosen === "string" ? chosen : null;
   }
   return window.prompt("Folder to save into (stand-in backend)", "D:\\recovered");
@@ -205,6 +220,12 @@ async function mock<T>(cmd: string, a: any): Promise<T> {
   switch (cmd) {
     case "elevation":
       return false as T;
+    case "volumes":
+      return [
+        { letter: "C", device_path: "\\\\.\\C:", mount: "C:\\", label: null, filesystem: "NTFS", total_bytes: 476 * 2 ** 30, free_bytes: 88 * 2 ** 30, removable: false, readable: false, note: "requires Administrator to read sector data" },
+        { letter: "D", device_path: "\\\\.\\D:", mount: "D:\\", label: "Data", filesystem: "NTFS", total_bytes: 477 * 2 ** 30, free_bytes: 237 * 2 ** 30, removable: false, readable: true, note: null },
+        { letter: "E", device_path: "\\\\.\\E:", mount: "E:\\", label: "SANDISK", filesystem: "exFAT", total_bytes: 64 * 2 ** 30, free_bytes: 51 * 2 ** 30, removable: true, readable: true, note: null },
+      ] as T;
     case "devices":
       return [
         { path: "\\\\.\\PhysicalDrive2", kind: "Removable", model: "SanDisk Ultra USB", size_bytes: 64 * 2 ** 30, readable: true, note: null, removable: true, rotational: false },
@@ -260,6 +281,8 @@ async function mock<T>(cmd: string, a: any): Promise<T> {
       for (let i = a.start; i < Math.min(a.start + a.count, mockView.len); i++) out.push(mockRow(mockView.map(i)));
       return out as T;
     }
+    case "phone_screen":
+      throw new Error("the desktop app talks to the phone; this is the interface preview");
     case "thumbnail": {
       const r = mockRow(a.id);
       return (["jpg", "png", "heic", "mp4", "mov"].includes(r.ext) ? mockThumb(r) : null) as T;

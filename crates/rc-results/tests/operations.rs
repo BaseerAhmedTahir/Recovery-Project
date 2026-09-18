@@ -42,6 +42,45 @@ fn scan_filter_restore_and_preview_on_ext4() {
         );
     }
 
+    // "Scan a folder": only files that used to be inside it, whichever way
+    // the folder is written, and not a folder that merely starts the same.
+    let photos = store
+        .set_view(&Filter {
+            folder: "\\Photos\\".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let in_photos = store.rows(0, photos).unwrap();
+    assert!(!in_photos.is_empty());
+    assert!(
+        in_photos
+            .iter()
+            .all(|r| r.path.to_lowercase().starts_with("photos/") && r.kind == "deleted"),
+        "{:?}",
+        in_photos.iter().map(|r| &r.path).collect::<Vec<_>>()
+    );
+    let expected = truth["files"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(k, m)| m["state"] == "deleted" && k.starts_with("photos/"))
+        .count();
+    assert!(
+        in_photos.len() >= expected,
+        "{} rows in photos/, {expected} deleted corpus files there",
+        in_photos.len()
+    );
+    assert_eq!(
+        store
+            .set_view(&Filter {
+                folder: "photo".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        0,
+        "a folder named 'photo' must not match 'photos/'"
+    );
+
     // The deleted corpus files, found by filter.
     let deleted: BTreeMap<String, String> = truth["files"]
         .as_object()

@@ -12,6 +12,7 @@ import {
   pickImageFile,
   Progress,
   Row,
+  Volume,
   Written,
 } from "./api";
 import { escapeHtml, ResultsView } from "./grid";
@@ -58,6 +59,9 @@ const state = {
   search: "",
   tiles: true,
   folder: "",
+  /** "Scan a folder": the folder, relative to its drive; "" for a whole drive. */
+  scope: "",
+  scopeLabel: "",
   scanning: false,
 };
 
@@ -108,6 +112,7 @@ all<HTMLButtonElement>(".choice").forEach((b) =>
         ? "Choose the drive, memory card or phone card the pictures were on."
         : "Choose the drive, memory card or USB stick to search.";
     show("w-where");
+    loadVolumes();
     loadDevices();
   }),
 );
@@ -115,6 +120,55 @@ all<HTMLButtonElement>(".choice").forEach((b) =>
 // ---------------------------------------------------------------------------
 // step 2: where
 // ---------------------------------------------------------------------------
+
+/** What Windows Explorer would call it: "Data (D:)", "Local Disk (C:)". */
+function volumeName(v: Volume): string {
+  const name = v.label?.trim() || (v.removable ? "USB Drive" : "Local Disk");
+  return `${name} (${v.letter}:)`;
+}
+
+async function loadVolumes() {
+  const host = $("#volume-list");
+  host.innerHTML = `<div class="row-item"><div class="spinner"></div><div class="grow muted">Looking for drives…</div></div>`;
+  try {
+    const vols = await call<Volume[]>("volumes");
+    if (!vols.length) {
+      host.innerHTML = `<div class="row-item"><div class="grow muted">No drive letters were found. Use a whole disk below, or plug the card in and press Refresh.</div></div>`;
+      return;
+    }
+    host.innerHTML = vols
+      .map((v, i) => {
+        const used = v.total_bytes ? Math.round(((v.total_bytes - v.free_bytes) / v.total_bytes) * 100) : 0;
+        return `<button class="row-item ${v.readable ? "" : "disabled"}" data-v="${i}" ${v.readable ? "" : "disabled"}>
+          ${icon(v.removable ? "card" : "drive")}
+          <span class="grow">
+            <b>${escapeHtml(volumeName(v))}</b>
+            <small>${escapeHtml(v.filesystem ?? "unknown filesystem")} · ${bytes(v.free_bytes)} free of ${bytes(v.total_bytes)}</small>
+          </span>
+          <span class="meter" title="${used}% used"><i style="width:${used}%"></i></span>
+          ${v.readable ? '<span class="badge plain">Choose</span>' : `<span class="badge warn">${escapeHtml(v.note ?? "not readable")}</span>`}
+        </button>`;
+      })
+      .join("");
+    host.querySelectorAll<HTMLButtonElement>("[data-v]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const v = vols[Number(b.dataset.v)];
+        state.scope = "";
+        startScan(v.device_path, `${volumeName(v)} · ${bytes(v.total_bytes)}`);
+      }),
+    );
+  } catch (e) {
+    host.innerHTML = `<div class="row-item"><div class="grow" style="color:var(--bad)">${escapeHtml(String(e))}</div></div>`;
+  }
+}
+
+/** `D:\\Photos\\2024` -> the drive to read and the folder inside it. */
+function splitFolder(path: string): { device: string; letter: string; folder: string } | null {
+  const m = /^([A-Za-z]):[\\/]*(.*)$/.exec(path.trim());
+  if (!m) return null;
+  const letter = m[1].toUpperCase();
+  return { device: `\\\\.\\${letter}:`, letter, folder: m[2].replace(/[\\/]+$/, "") };
+}
 
 function driveName(d: Device): string {
   if (d.model && d.model.trim()) return d.model.trim();
@@ -164,6 +218,7 @@ async function loadDevices() {
     host.querySelectorAll<HTMLButtonElement>("[data-i]").forEach((b) =>
       b.addEventListener("click", () => {
         const d = devices[Number(b.dataset.i)];
+        state.scope = "";
         startScan(d.path, `${driveName(d)} · ${bytes(d.size_bytes)}`);
       }),
     );
@@ -172,11 +227,34 @@ async function loadDevices() {
   }
 }
 
-$("#refresh-devices").addEventListener("click", loadDevices);
+$("#refresh-devices").addEventListener("click", () => {
+  loadVolumes();
+  loadDevices();
+});
+$("#pick-folder").addEventListener("click", async () => {
+  const picked = await pickFolder("Scan for files deleted from this folder");
+  if (!picked) return;
+  const where = splitFolder(picked);
+  if (!where) {
+    $("#elevation-notice").innerHTML = `<div class="notice bad">${icon("warn")}<div>
+      Choose a folder on a drive letter (like <span class="mono">D:\\Photos</span>). Network and
+      cloud folders cannot be scanned for deleted files.</div></div>`;
+    return;
+  }
+  state.scope = where.folder;
+  state.scopeLabel = picked;
+  // Carved files have no original folder, so a folder scan reads the drive's
+  // own record of what was deleted and where it was.
+  $<HTMLInputElement>("#deep").checked = false;
+  startScan(where.device, where.folder ? `${picked} (on ${where.letter}:)` : `${where.letter}: drive`);
+});
 $("#where-back").addEventListener("click", () => show("w-what"));
 $("#pick-image").addEventListener("click", async () => {
   const p = await pickImageFile();
-  if (p) startScan(p, p);
+  if (p) {
+    state.scope = "";
+    startScan(p, p);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -190,6 +268,13 @@ async function startScan(source: string, label: string) {
   state.scanning = true;
   show("w-scan");
   $("#scan-source").textContent = label;
+  const scope = $("#scan-scope");
+  scope.hidden = !state.scope;
+  if (state.scope) {
+    scope.innerHTML = `${icon("folder")}<div>Deleted files are no longer inside any folder, so the
+      whole drive is read and only the files that used to be in
+      <b>${escapeHtml(state.scopeLabel)}</b> are shown.</div>`;
+  }
   $("#scan-title").textContent = "Looking for your files…";
   $("#scan-phase").textContent = "Starting…";
   $("#scan-found").textContent = "0 found";
@@ -353,6 +438,7 @@ async function openResults() {
 async function applyFilter() {
   const filter: Filter = {
     text: state.search,
+    folder: state.scope,
     bands: [],
     kinds: [],
     exts: CATEGORIES[state.category] ?? [],
@@ -366,6 +452,9 @@ async function applyFilter() {
   results.setCount(n);
   applyShape();
   $("#count").textContent = `${n.toLocaleString()} file${n === 1 ? "" : "s"}`;
+  const chip = $("#folder-chip");
+  chip.hidden = !state.scope;
+  chip.textContent = state.scope ? `In ${state.scopeLabel}` : "";
 }
 
 all(".toolbar .chip").forEach((c) =>
@@ -474,6 +563,79 @@ $("#ios-trashed").addEventListener("click", async () => {
   if (folder) runCli(["ios", "trashed", folder], $("#ios-out"));
 });
 $("#phone-back").addEventListener("click", () => show("w-what"));
+
+// ---------------------------------------------------------------------------
+// the phone's screen, for a broken display
+// ---------------------------------------------------------------------------
+
+const mirror = { width: 0, height: 0, live: false, busy: false, from: null as [number, number] | null };
+
+async function refreshMirror() {
+  if (mirror.busy) return;
+  mirror.busy = true;
+  try {
+    const s = await call<{ png: string; width: number; height: number }>("phone_screen");
+    mirror.width = s.width;
+    mirror.height = s.height;
+    $<HTMLImageElement>("#mirror-img").src = s.png;
+    $("#mirror").hidden = false;
+    $("#mirror-status").textContent = `${s.width} x ${s.height}`;
+  } catch (e) {
+    $("#mirror-status").innerHTML = `<span style="color:var(--bad)">${escapeHtml(String(e))}</span>`;
+    mirror.live = false;
+    $<HTMLInputElement>("#mirror-live").checked = false;
+  } finally {
+    mirror.busy = false;
+  }
+}
+
+/** Where on the phone a click on the picture landed. */
+function phonePoint(e: MouseEvent): [number, number] {
+  const img = $<HTMLImageElement>("#mirror-img");
+  const r = img.getBoundingClientRect();
+  const x = Math.round(((e.clientX - r.left) / r.width) * mirror.width);
+  const y = Math.round(((e.clientY - r.top) / r.height) * mirror.height);
+  return [Math.max(0, Math.min(mirror.width - 1, x)), Math.max(0, Math.min(mirror.height - 1, y))];
+}
+
+async function phoneInput(action: string, x = 0, y = 0, x2 = 0, y2 = 0, text = "") {
+  try {
+    await call("phone_input", { action, x, y, x2, y2, text });
+    setTimeout(refreshMirror, 350);
+  } catch (e) {
+    $("#mirror-status").innerHTML = `<span style="color:var(--bad)">${escapeHtml(String(e))}</span>`;
+  }
+}
+
+$("#mirror-start").addEventListener("click", refreshMirror);
+$("#mirror-live").addEventListener("change", (e) => {
+  mirror.live = (e.target as HTMLInputElement).checked;
+  const tick = async () => {
+    if (!mirror.live) return;
+    await refreshMirror();
+    setTimeout(tick, 900);
+  };
+  tick();
+});
+$("#mirror-img").addEventListener("mousedown", (e) => {
+  mirror.from = phonePoint(e as MouseEvent);
+});
+$("#mirror-img").addEventListener("mouseup", (e) => {
+  const to = phonePoint(e as MouseEvent);
+  const from = mirror.from ?? to;
+  mirror.from = null;
+  const far = Math.hypot(to[0] - from[0], to[1] - from[1]) > mirror.width * 0.04;
+  if (far) phoneInput("swipe", from[0], from[1], to[0], to[1]);
+  else phoneInput("tap", to[0], to[1]);
+});
+all<HTMLButtonElement>(".mirror-keys button").forEach((b) =>
+  b.addEventListener("click", () => phoneInput("key", 0, 0, 0, 0, b.dataset.key!)),
+);
+$("#mirror-type").addEventListener("click", () => {
+  const box = $<HTMLInputElement>("#mirror-text");
+  if (box.value) phoneInput("text", 0, 0, 0, 0, box.value);
+  box.value = "";
+});
 
 // ---------------------------------------------------------------------------
 // advanced view

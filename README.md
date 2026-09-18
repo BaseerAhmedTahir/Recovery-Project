@@ -17,6 +17,7 @@ it never writes to the disk it is reading.
 | Mechanical hard disks | **Very good**, until something overwrites the space. |
 | SSDs and NVMe (internal or USB) | **Usually nothing.** The drive erases deleted blocks itself (TRIM), often within seconds. Recent deletions only. |
 | Android internal storage | **Trash and caches only.** Every file is encrypted with its own key, which is destroyed on delete. No app or tool recovers past that — treat claims otherwise as false. |
+| Android phone with a broken screen | **Its screen, on your PC.** If USB debugging was on, the app shows the display and sends your clicks back, so you can unlock it and copy the files off. |
 | Android SD card | Take the card out and scan it here: full recovery. |
 | iPhone | Through an unencrypted backup: "Recently Deleted" photos and videos, and their thumbnails. |
 
@@ -43,9 +44,11 @@ Details, and what is deliberately not bundled, in [packaging/README.md](packagin
 **The desktop app** (`rc-gui.exe`) is a five-step wizard, like Recuva:
 
 1. **What** — Photos & videos, Documents, Everything, or From a phone.
-2. **Where** — pick a drive or memory card from the list (or a disk image file).
-   Reading a whole disk needs Administrator; the app offers to restart itself
-   with it. Tick *Deep scan* to also search every sector.
+2. **Where** — pick a drive letter (C:, D:, a USB stick's E:), **a specific
+   folder**, a disk image file, or — for a drive that was formatted or lost its
+   letter — a whole disk. Reading any of them needs Administrator; the app
+   offers to restart itself with it. Tick *Deep scan* to also search every
+   sector.
 3. **Scan** — one progress bar; *Stop* keeps whatever was found so far.
 4. **Choose** — picture thumbnails or a list, each file marked *Looks intact*,
    *May be damaged* or *Likely damaged*. Tick what you want.
@@ -78,11 +81,26 @@ Reading a whole physical disk needs Administrator. Image files do not.
 with `rc image`, then recover from the image. Every extra read of a dying disk
 is a read you may not get again.
 
+## What this will not do
+
+- **Unlock a phone you are locked out of.** Every method that exists is either
+  a factory reset — which erases the data you are trying to recover, and which
+  Google and Apple already offer for free — or an exploit for one chipset.
+  There is no method that unlocks a phone *and* keeps the data. Use the
+  manufacturer's own recovery, then restore from a backup; `rc host-backups`
+  finds the backups already on this computer.
+- **Flash firmware to "repair" a phone.** It needs a download (this tool is
+  offline) and it writes to the device this engine never writes to.
+- Anything that needs the device's owner not to be there. Everything here
+  requires the phone unlocked, or USB debugging you switched on yourself.
+
 ## Safety
 
 - Devices are opened read-only. There is no code path that writes to them.
 - Recovered files go through one writer that refuses any destination on the
-  disk being read.
+  storage being read: scanning a whole disk refuses every partition on it, and
+  scanning one drive letter refuses that drive letter (another partition is
+  different sectors, so it stays available).
 - A test scans a disk image and compares its SHA-256 before and after; it runs
   on every build.
 - No network. `cargo xtask audit` fails the build if a networking library

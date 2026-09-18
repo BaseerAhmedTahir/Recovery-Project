@@ -183,7 +183,16 @@ fn probe(path: &str, kind: DeviceKind) -> Option<DeviceInfo> {
     // SAFETY: DISK_GEOMETRY_EX is POD and the IOCTL fills it in.
     let geom: DISK_GEOMETRY_EX = unsafe { ioctl_out(h.0, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, None) }?;
     let sector_size = SectorSize::new(geom.Geometry.BytesPerSector).ok()?;
-    let total_bytes = geom.DiskSize as u64;
+    // On a volume handle the geometry IOCTL is answered by the disk beneath
+    // it, so DiskSize is the whole disk's. The volume's own length comes from
+    // IOCTL_DISK_GET_LENGTH_INFO, which needs read access; until the device is
+    // opened for reading, the filesystem's size stands in (it is never larger
+    // than the volume).
+    let total_bytes = if kind == DeviceKind::Volume {
+        volume_length(h.0).or_else(|| filesystem_size(path))?
+    } else {
+        geom.DiskSize as u64
+    };
     let total_sectors = total_bytes / sector_size.get() as u64;
     if total_sectors == 0 {
         return None;
@@ -264,6 +273,38 @@ fn probe(path: &str, kind: DeviceKind) -> Option<DeviceInfo> {
     })
 }
 
+// CTL_CODE(IOCTL_DISK_BASE=7, 0x17, METHOD_BUFFERED, FILE_READ_ACCESS)
+const IOCTL_DISK_GET_LENGTH_INFO: u32 = 0x0007_405C;
+// CTL_CODE(FILE_DEVICE_FILE_SYSTEM=9, 32, METHOD_NEITHER, FILE_ANY_ACCESS)
+const FSCTL_ALLOW_EXTENDED_DASD_IO: u32 = 0x0009_0083;
+
+/// A volume's length in bytes, from a handle with read access.
+fn volume_length(h: HANDLE) -> Option<u64> {
+    // SAFETY: GET_LENGTH_INFORMATION is a single i64, POD.
+    let len: i64 = unsafe { ioctl_out(h, IOCTL_DISK_GET_LENGTH_INFO, None) }?;
+    (len > 0).then_some(len as u64)
+}
+
+/// The filesystem's size, for a volume path like `\\.\D:`.
+fn filesystem_size(path: &str) -> Option<u64> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mount = crate::volumes::mount_for_device_path(path)?;
+    let w = wide(&mount);
+    let (mut free, mut total, mut avail) = (0u64, 0u64, 0u64);
+    // SAFETY: w is NUL-terminated; the out-pointers are to live u64s.
+    let ok = unsafe { GetDiskFreeSpaceExW(w.as_ptr(), &mut avail, &mut total, &mut free) };
+    (ok != 0 && total > 0).then_some(total)
+}
+
+/// Whether a device path can be opened for reading, or why not.
+pub(crate) fn can_read(path: &str) -> std::result::Result<(), String> {
+    match open_handle(path, GENERIC_READ, true) {
+        Ok(_) => Ok(()),
+        Err(ERROR_ACCESS_DENIED) => Err("requires Administrator to read sector data".to_string()),
+        Err(code) => Err(format!("cannot open for reading (error {code})")),
+    }
+}
+
 /// True when the current process holds an elevated token.
 pub fn is_elevated() -> bool {
     use windows_sys::Win32::Foundation::HANDLE as WHandle;
@@ -321,6 +362,9 @@ pub struct WindowsDevice {
     handle: Handle,
     info: DeviceInfo,
     _guard: ScanSourceGuard,
+    /// A volume is also registered under its `\\?\Volume{GUID}` name, the name
+    /// the output sink resolves destinations to. See `volumes.rs`.
+    _aliases: Vec<ScanSourceGuard>,
 }
 
 impl WindowsDevice {
@@ -351,11 +395,50 @@ impl WindowsDevice {
             }
         };
 
+        let mut info = info;
+        let mut aliases = Vec::new();
+        if info.kind == DeviceKind::Volume {
+            // The true length, now that the handle can read.
+            if let Some(len) = volume_length(handle.0) {
+                info.total_sectors = len / info.sector_size.get() as u64;
+            }
+            // NTFS keeps a backup boot sector past the end of the filesystem;
+            // without this, reads of the volume's last sectors are refused.
+            // It widens what may be *read*; nothing here can write.
+            let mut returned = 0u32;
+            // SAFETY: a live handle and no buffers.
+            unsafe {
+                DeviceIoControl(
+                    handle.0,
+                    FSCTL_ALLOW_EXTENDED_DASD_IO,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            // Without its stable name the output sink could not recognise a
+            // destination on this volume, so refuse rather than scan unguarded.
+            let guid = crate::volumes::volume_guid(&p).ok_or_else(|| DeviceError::Unsupported {
+                path: path.to_path_buf(),
+                detail: "Windows did not report this volume's identity, so recovered files \
+                         could not be kept off it; scan the physical disk instead"
+                    .to_string(),
+            })?;
+            aliases.push(ScanSourceGuard::register(
+                crate::geometry::DeviceId::Path(guid.clone()),
+                Path::new(&guid),
+            ));
+        }
+
         let guard = ScanSourceGuard::register(info.id.clone(), &info.path);
         Ok(WindowsDevice {
             handle,
             info,
             _guard: guard,
+            _aliases: aliases,
         })
     }
 }

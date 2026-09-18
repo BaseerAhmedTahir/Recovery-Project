@@ -42,6 +42,91 @@ struct DeviceDto {
     rotational: Option<bool>,
 }
 
+/// The phone's screen, and what it takes to touch it from here.
+///
+/// For a phone whose display is broken: the picture comes from `screencap`
+/// and taps go back through `input`, both over the USB cable. USB debugging
+/// must already be authorized on the phone - see `rc-mobile/src/screen.rs`.
+#[derive(Serialize)]
+struct PhoneScreen {
+    png: String,
+    width: u32,
+    height: u32,
+}
+
+fn phone_adb() -> Res<rc_mobile::adb::Adb> {
+    let adb = rc_mobile::adb::Adb::find();
+    let c = rc_mobile::adb::checklist(adb.as_ref(), None);
+    if !c.adb_found {
+        return Err("adb was not found. Install Android platform-tools, or put the \
+                    platform-tools folder beside this program."
+            .into());
+    }
+    if !c.device_connected {
+        return Err("No phone is connected. Plug it in with a USB cable that carries data.".into());
+    }
+    if !c.authorized {
+        return Err("The phone has not accepted this computer. Unlock it if you can, turn on \
+                    USB debugging, and tap Allow. A phone that was never set up this way \
+                    cannot be reached."
+            .into());
+    }
+    Ok(adb
+        .expect("authorized implies adb")
+        .with_serial(c.serial.as_deref().unwrap_or("")))
+}
+
+#[tauri::command]
+async fn phone_screen() -> Res<PhoneScreen> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let adb = phone_adb()?;
+        let size = rc_mobile::screen::screen_size(&adb).map_err(err)?;
+        let png = rc_mobile::screen::screenshot(&adb).map_err(err)?;
+        Ok(PhoneScreen {
+            png: format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(png)
+            ),
+            width: size.width,
+            height: size.height,
+        })
+    })
+    .await
+    .map_err(err)?
+}
+
+/// One touch or key, sent to the phone. `text` types what it is given; there
+/// is no code-guessing anywhere in this program.
+#[tauri::command]
+async fn phone_input(action: String, x: u32, y: u32, x2: u32, y2: u32, text: String) -> Res<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let adb = phone_adb()?;
+        let size = rc_mobile::screen::screen_size(&adb).map_err(err)?;
+        match action.as_str() {
+            "tap" => rc_mobile::screen::tap(&adb, size, x, y).map_err(err)?,
+            "swipe" => {
+                rc_mobile::screen::swipe(&adb, size, (x, y), (x2, y2), 250).map_err(err)?
+            }
+            "key" => {
+                let k = rc_mobile::screen::Key::parse(&text)
+                    .ok_or_else(|| format!("unknown key {text:?}"))?;
+                rc_mobile::screen::key(&adb, k).map_err(err)?
+            }
+            "text" => rc_mobile::screen::type_text(&adb, &text).map_err(err)?,
+            other => return Err(format!("unknown action {other:?}")),
+        }
+        Ok(())
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Lettered volumes (C:, D:, a USB stick's E:), the way a person names them.
+#[tauri::command]
+fn volumes() -> Res<Vec<rc_device::VolumeInfo>> {
+    Ok(rc_device::enumerate_volumes())
+}
+
 #[tauri::command]
 fn devices() -> Res<Vec<DeviceDto>> {
     let list = rc_device::enumerate_devices().map_err(err)?;
@@ -430,6 +515,9 @@ fn main() {
             restore,
             run_cli,
             elevation,
+            volumes,
+            phone_screen,
+            phone_input,
             restart_elevated,
             open_folder,
             start_recovery,

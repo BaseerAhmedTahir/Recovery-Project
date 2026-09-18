@@ -115,3 +115,9 @@ pub fn is_elevated() -> bool {
     #[allow(unreachable_code)]
     false
 }
+
+/// Whether a Windows device path can be read, or why not.
+#[cfg(windows)]
+pub(crate) fn windows_can_read(path: &str) -> std::result::Result<(), String> {
+    windows::can_read(path)
+}

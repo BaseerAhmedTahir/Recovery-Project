@@ -706,6 +706,57 @@ the built package. Neither the installer nor the APK has been *installed*: this
 machine's C: drive has under 1 GB free, and no phone is attached. The APK is
 signed with the SDK's debug key; a release APK is left unsigned for you to sign.
 
+### 3.16 Drive letters and folders
+
+A drive letter (`\\.\D:`) is read exactly like a disk: it begins with its
+filesystem's boot sector, which the partition step recognises as one whole
+filesystem without a sweep. Reading one needs Administrator, like a disk.
+Listing them does not. Every NTFS, FAT and exFAT fixture is laid out this way
+already, so the parsers are exercised on this shape by every test; what is not
+covered here is the Windows volume handle itself, because a test run has no
+Administrator rights. Known specifics: a volume handle answers the geometry
+IOCTL with the *disk's* size, so the length comes from
+`IOCTL_DISK_GET_LENGTH_INFO`, and NTFS keeps a backup boot sector past the end
+of the filesystem, which needs `FSCTL_ALLOW_EXTENDED_DASD_IO` to read.
+
+**Where recovered files may be written changed with this.** A scanned *disk*
+still refuses every destination on that disk. A scanned *volume* refuses
+destinations on that volume only: another partition is a different set of
+sectors and writing there cannot overwrite what is being recovered. The volume
+is registered under its `\\?\Volume{GUID}` name, which is what a destination
+resolves to; `rc-image/tests/volume_guard.rs` asserts both halves. Before that
+registration existed, scanning `\\.\D:` and writing to `D:\out` was allowed -
+the destination resolved to `\\.\PhysicalDriveN`, which never equals `\\.\D:`.
+
+"Scan a folder" is a whole-drive read narrowed to the files whose recorded
+path was inside that folder. Carved files have no original path, so a folder
+scan reports only what the filesystem still remembers, and the deep scan is
+switched off for it. Folders on network drives and cloud placeholders are
+refused: there is no volume to read.
+
+### 3.17 What the phone side deliberately will not do
+
+`rc android screen/tap/swipe/key/type` show a phone's display on this computer
+and send touches back, for a phone whose screen is broken. They need USB
+debugging to have been switched on and this computer authorised *before* the
+damage; a phone that was never set up that way cannot be reached, and nothing
+here changes that. `type` types the text it is given, one string per call.
+There is no loop that tries codes, and there will not be: that is the feature
+that turns a repair tool into a tool for stolen phones, and Android erases some
+phones after repeated wrong codes anyway.
+
+Not implemented, and not planned: lock-screen or FRP bypass (every real method
+is either a wipe, which destroys the data being recovered, or a chipset
+exploit), and firmware flashing to "repair" a phone that will not boot (it
+needs a download, and it writes to the device this engine promises never to
+write to). For a locked phone the honest path is the manufacturer's own -
+Google Find My Device, Samsung Find My Mobile, Apple recovery - followed by a
+restore from a backup; `rc host-backups` finds the backups already on this
+computer.
+
+None of the screen commands has run against a real phone: there is no device
+here (3.15).
+
 ### 3.15 The companion app has never run on a phone
 
 No Android phone and no emulator system image was available on this machine, so
