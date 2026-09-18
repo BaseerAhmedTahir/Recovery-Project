@@ -1,335 +1,658 @@
 import "./styles.css";
-import { call, CliOutput, Device, Filter, HexView, inTauri, listen, Progress, Row } from "./api";
-import { escapeHtml, Grid } from "./grid";
+import {
+  call,
+  CliOutput,
+  Device,
+  Filter,
+  bridgeError,
+  onBackendKnown,
+  inTauri,
+  listen,
+  pickFolder,
+  pickImageFile,
+  Progress,
+  Row,
+  Written,
+} from "./api";
+import { escapeHtml, ResultsView } from "./grid";
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
+const all = <T extends HTMLElement = HTMLElement>(sel: string) => [...document.querySelectorAll<T>(sel)];
+const icon = (name: string) => `<svg class="i"><use href="#i-${name}" /></svg>`;
 
-function fmtBytes(n: number): string {
-  const u = ["B", "KiB", "MiB", "GiB", "TiB"];
+function bytes(n: number): string {
+  const u = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (n >= 1024 && i < u.length - 1) {
     n /= 1024;
     i++;
   }
-  return `${i ? n.toFixed(1) : n} ${u[i]}`;
+  return `${i === 0 ? n : n.toFixed(n < 10 ? 1 : 0)} ${u[i]}`;
 }
 
-function fmtTime(t: number | null): string {
-  return t ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ") : "";
+function when(t: number | null): string {
+  return t ? new Date(t * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
+}
+
+/** GREEN/YELLOW/RED and validation status, said in words. */
+function health(r: Row): { cls: string; label: string } {
+  if (r.band === "GREEN" || r.status === "valid") return { cls: "ok", label: "Looks intact" };
+  if (r.band === "RED") return { cls: "bad", label: "Likely damaged" };
+  if (r.band === "YELLOW" || r.status === "partial") return { cls: "warn", label: "May be damaged" };
+  return { cls: "plain", label: "Not checked" };
+}
+
+const CATEGORIES: Record<string, string[]> = {
+  photos: ["jpg", "jpeg", "png", "heic", "heif", "gif", "bmp", "tif", "tiff", "webp", "dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "mp4", "mov", "m4v", "avi", "mkv", "3gp", "webm", "mts"],
+  documents: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "odt", "ods", "csv", "sqlite", "db", "eml", "msg", "epub"],
+  audio: ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "wma", "amr"],
+  everything: [],
+};
+const PICTURE_EXTS = new Set(["jpg", "jpeg", "png", "heic", "heif", "gif", "bmp", "webp", "tif", "tiff", "mp4", "mov", "m4v", "avi", "mkv", "webm", "3gp"]);
+
+const state = {
+  kind: "everything" as keyof typeof CATEGORIES | "phone",
+  source: "",
+  sourceLabel: "",
+  category: "everything",
+  search: "",
+  tiles: true,
+  folder: "",
+  scanning: false,
+};
+
+// ---------------------------------------------------------------------------
+// steps
+// ---------------------------------------------------------------------------
+
+const STEPS = [
+  { id: "w-what", label: "What" },
+  { id: "w-where", label: "Where" },
+  { id: "w-scan", label: "Scan" },
+  { id: "w-results", label: "Choose" },
+  { id: "w-save", label: "Recover" },
+];
+
+function show(id: string) {
+  all<HTMLElement>("main > section").forEach((s) => (s.hidden = s.id !== id));
+  const index = STEPS.findIndex((s) => s.id === id);
+  const stepper = $("#stepper");
+  stepper.hidden = index < 0;
+  if (index >= 0) {
+    stepper.innerHTML = STEPS.map(
+      (s, i) =>
+        `<div class="step ${i < index ? "done" : i === index ? "now" : ""}">
+           <span class="num">${i < index ? "✓" : i + 1}</span>${s.label}
+         </div>${i < STEPS.length - 1 ? '<span class="step-sep"></span>' : ""}`,
+    ).join("");
+  }
+  $("#to-advanced").hidden = id === "adv";
+  if (id === "w-results") results.relayout();
 }
 
 // ---------------------------------------------------------------------------
-// tabs
+// step 1: what
 // ---------------------------------------------------------------------------
 
-document.querySelectorAll<HTMLButtonElement>("nav button").forEach((b) =>
+all<HTMLButtonElement>(".choice").forEach((b) =>
   b.addEventListener("click", () => {
-    document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("active", x === b));
-    document
-      .querySelectorAll<HTMLElement>("main > section")
-      .forEach((s) => (s.hidden = s.id !== b.dataset.tab));
+    state.kind = b.dataset.kind as typeof state.kind;
+    if (state.kind === "phone") {
+      show("w-phone");
+      return;
+    }
+    state.category = state.kind;
+    all(".toolbar .chip").forEach((c) => c.setAttribute("aria-pressed", String(c.getAttribute("data-cat") === state.category)));
+    $("#where-sub").textContent =
+      state.kind === "photos"
+        ? "Choose the drive, memory card or phone card the pictures were on."
+        : "Choose the drive, memory card or USB stick to search.";
+    show("w-where");
+    loadDevices();
   }),
 );
 
-if (!inTauri) {
-  $("#preview-banner").hidden = false;
-}
+// ---------------------------------------------------------------------------
+// step 2: where
+// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// sources and scans
-// ---------------------------------------------------------------------------
+function driveName(d: Device): string {
+  if (d.model && d.model.trim()) return d.model.trim();
+  if (d.removable) return "Removable drive";
+  return d.kind === "Image" ? "Disk image file" : "Disk";
+}
 
 async function loadDevices() {
-  const host = $("#devices");
+  const host = $("#device-list");
+  host.innerHTML = `<div class="row-item"><div class="spinner"></div><div class="grow muted">Looking for drives…</div></div>`;
+  const notice = $("#elevation-notice");
+  notice.innerHTML = "";
   try {
-    const list = await call<Device[]>("devices");
-    host.innerHTML = list.length
-      ? list
-          .map(
-            (d) => `<label class="device ${d.readable ? "" : "unreadable"}">
-              <input type="radio" name="device" value="${escapeHtml(d.path)}" ${d.readable ? "" : "disabled"}>
-              <b>${escapeHtml(d.path)}</b> ${escapeHtml(d.model ?? "")} · ${fmtBytes(d.size_bytes)} · ${d.kind}
-              ${d.removable ? " · removable" : ""}${d.rotational === false ? " · SSD (TRIM may have erased deleted data)" : ""}
-              ${d.note ? `<span class="note">${escapeHtml(d.note)}</span>` : ""}
-            </label>`,
-          )
-          .join("")
-      : `<p class="muted">No devices listed. ${inTauri ? "Raw devices need the app run as Administrator; image files work without." : ""}</p>`;
-    host.querySelectorAll<HTMLInputElement>("input").forEach((i) =>
-      i.addEventListener("change", () => ($<HTMLInputElement>("#source").value = i.value)),
+    const elevated = await call<boolean>("elevation");
+    const devices = await call<Device[]>("devices");
+    if (!elevated && inTauri()) {
+      notice.innerHTML = `<div class="notice warn">${icon("shield")}
+        <div><b>Some drives need Administrator.</b> Windows only lets a program read a whole
+        disk with Administrator rights. Disk image files work without.</div>
+        <button id="elevate" class="primary">Restart as Administrator</button></div>`;
+      $("#elevate")?.addEventListener("click", async () => {
+        try {
+          await call("restart_elevated");
+        } catch (e) {
+          notice.innerHTML = `<div class="notice bad">${icon("warn")}<div>${escapeHtml(String(e))}</div></div>`;
+        }
+      });
+    }
+    if (!devices.length) {
+      host.innerHTML = `<div class="row-item"><div class="grow muted">No drives were found. Plug the card or USB stick in and press Refresh.</div></div>`;
+      return;
+    }
+    host.innerHTML = devices
+      .map(
+        (d, i) => `<button class="row-item ${d.readable ? "" : "disabled"}" data-i="${i}" ${d.readable ? "" : "disabled"}>
+          ${icon(d.removable ? "card" : "drive")}
+          <span class="grow">
+            <b>${escapeHtml(driveName(d))}</b>
+            <small>${bytes(d.size_bytes)} · ${escapeHtml(d.path)}${d.removable ? " · removable" : ""}${
+              d.rotational === false && !d.removable ? " · SSD" : ""
+            }</small>
+          </span>
+          ${d.readable ? '<span class="badge plain">Choose</span>' : `<span class="badge warn">${escapeHtml(d.note ?? "not readable")}</span>`}
+        </button>`,
+      )
+      .join("");
+    host.querySelectorAll<HTMLButtonElement>("[data-i]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const d = devices[Number(b.dataset.i)];
+        startScan(d.path, `${driveName(d)} · ${bytes(d.size_bytes)}`);
+      }),
     );
   } catch (e) {
-    host.innerHTML = `<p class="error">${escapeHtml(String(e))}</p>`;
+    host.innerHTML = `<div class="row-item"><div class="grow" style="color:var(--bad)">${escapeHtml(String(e))}</div></div>`;
   }
 }
+
 $("#refresh-devices").addEventListener("click", loadDevices);
+$("#where-back").addEventListener("click", () => show("w-what"));
+$("#pick-image").addEventListener("click", async () => {
+  const p = await pickImageFile();
+  if (p) startScan(p, p);
+});
 
-function setBusy(busy: boolean) {
-  $<HTMLButtonElement>("#scan-fs").disabled = busy;
-  $<HTMLButtonElement>("#carve").disabled = busy;
-  $<HTMLButtonElement>("#stop").disabled = !busy;
-}
+// ---------------------------------------------------------------------------
+// step 3: scan
+// ---------------------------------------------------------------------------
 
-async function startScan(cmd: "scan_filesystems" | "carve") {
-  const source = $<HTMLInputElement>("#source").value.trim();
-  if (!source) {
-    $("#scan-status").textContent = "Choose a device or type the path of an image file.";
-    return;
-  }
-  setBusy(true);
+async function startScan(source: string, label: string) {
+  foundBefore = 0;
+  state.source = source;
+  state.sourceLabel = label;
+  state.scanning = true;
+  show("w-scan");
+  $("#scan-source").textContent = label;
+  $("#scan-title").textContent = "Looking for your files…";
+  $("#scan-phase").textContent = "Starting…";
+  $("#scan-found").textContent = "0 found";
   $("#scan-notes").innerHTML = "";
-  $("#scan-status").textContent = cmd === "carve" ? "Carving…" : "Reading filesystem metadata…";
+  $("#scan-spin").hidden = false;
+  $("#scan-results").hidden = true;
+  $<HTMLButtonElement>("#scan-stop").disabled = false;
+  $("#scan-bar").classList.add("indeterminate");
   try {
-    await call(cmd, { source });
+    // Each scan in the simple view shows its own results only; results from
+    // an earlier scan (or an earlier run of the app) would look like
+    // duplicates. The advanced view can still pile scans together.
+    await call("clear");
+    thumbs.clear();
+    await call("start_recovery", { source, deep: $<HTMLInputElement>("#deep").checked });
   } catch (e) {
-    setBusy(false);
-    $("#scan-status").textContent = String(e);
+    state.scanning = false;
+    $("#scan-phase").textContent = String(e);
+    $("#scan-spin").hidden = true;
   }
 }
-$("#scan-fs").addEventListener("click", () => startScan("scan_filesystems"));
-$("#carve").addEventListener("click", () => startScan("carve"));
-$("#stop").addEventListener("click", () => call("stop"));
+
+$("#scan-stop").addEventListener("click", () => {
+  $("#scan-phase").textContent = "Stopping…";
+  call("stop");
+});
+$("#scan-results").addEventListener("click", () => openResults());
+
+// The deep scan reports its own count from zero; the files the filesystem
+// phase already found must not appear to vanish.
+let foundBefore = 0;
+listen<number>("rows-added", (n) => {
+  foundBefore = n;
+});
 
 listen<Progress>("progress", (p) => {
-  const bar = $<HTMLProgressElement>("#progress");
+  const bar = $("#scan-bar");
+  const fill = bar.querySelector("i") as HTMLElement;
   if (p.total > 0) {
-    bar.max = p.total;
-    bar.value = p.done;
+    bar.classList.remove("indeterminate");
+    fill.style.width = `${Math.min(100, (p.done / p.total) * 100).toFixed(1)}%`;
+    $("#scan-phase").textContent = `${p.phase} — ${bytes(p.done)} of ${bytes(p.total)}`;
   } else {
-    bar.removeAttribute("value"); // indeterminate: the amount of work is not known
+    bar.classList.add("indeterminate");
+    $("#scan-phase").textContent = p.phase;
   }
-  $("#scan-status").textContent = `${p.phase}${
-    p.total ? ` — ${fmtBytes(p.done)} of ${fmtBytes(p.total)}` : ""
-  } · ${p.found.toLocaleString()} found`;
+  $("#scan-found").textContent = `${(foundBefore + p.found).toLocaleString()} found`;
+  // The advanced panel shares the same events.
+  $("#adv-status").textContent = `${p.phase} · ${p.found.toLocaleString()} found`;
+  const advBar = $("#adv-bar");
+  advBar.style.width = p.total ? `${((p.done / p.total) * 100).toFixed(1)}%` : "40%";
 });
 
 listen<{ ok: boolean; summary?: { rows_added: number; notes: string[] }; error?: string }>(
   "scan-done",
   async (d) => {
-    setBusy(false);
-    const bar = $<HTMLProgressElement>("#progress");
-    bar.max = 1;
-    bar.value = d.ok ? 1 : 0;
-    if (d.ok && d.summary) {
-      $("#scan-status").textContent = `Done: ${d.summary.rows_added.toLocaleString()} rows added.`;
-      $("#scan-notes").innerHTML = d.summary.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("");
-      await applyFilter();
-    } else {
-      $("#scan-status").textContent = `Failed: ${d.error}`;
+    state.scanning = false;
+    $("#scan-spin").hidden = true;
+    $<HTMLButtonElement>("#scan-stop").disabled = true;
+    $<HTMLButtonElement>("#adv-stop").disabled = true;
+    $("#scan-bar").classList.remove("indeterminate");
+    ($("#scan-bar").querySelector("i") as HTMLElement).style.width = "100%";
+    if (!d.ok) {
+      $("#scan-title").textContent = "The scan could not finish";
+      $("#scan-phase").textContent = d.error ?? "";
+      $("#adv-status").textContent = d.error ?? "";
+      return;
     }
+    const notes = d.summary?.notes ?? [];
+    $("#scan-notes").innerHTML = notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("");
+    $("#adv-notes").innerHTML = $("#scan-notes").innerHTML;
+    $("#scan-title").textContent = "Finished searching";
+    $("#scan-phase").textContent = `${(foundBefore + (d.summary?.rows_added ?? 0)).toLocaleString()} files found`;
+    $("#scan-results").hidden = false;
+    if (!$("#w-scan").hidden) openResults();
+    if (!$("#adv").hidden) applyAdvancedFilter();
   },
 );
 
 // ---------------------------------------------------------------------------
-// results grid
+// step 4: results
 // ---------------------------------------------------------------------------
 
-const grid = new Grid($("#grid"), [
-  { key: "band", label: "Rating", width: "84px", render: (r) => (r.band ? `<span class="pill ${r.band.toLowerCase()}">${r.band} ${r.score}</span>` : `<span class="pill">${escapeHtml(r.status)}</span>`) },
-  { key: "name", label: "Name", width: "260px" },
-  { key: "path", label: "Path", width: "420px" },
-  { key: "ext", label: "Type", width: "70px" },
-  { key: "size", label: "Size", width: "100px", render: (r) => fmtBytes(r.size) },
-  { key: "modified", label: "Modified", width: "140px", render: (r) => fmtTime(r.modified) },
-  { key: "kind", label: "Found by", width: "90px" },
-  { key: "source", label: "Source", width: "240px" },
-]);
+const thumbs = new Map<number, string | null>();
+const asking = new Set<number>();
 
-let sort: string | null = null;
-let descending = false;
-document.querySelectorAll<HTMLElement>(".grid-head [data-sort]").forEach((h) =>
-  h.addEventListener("click", () => {
-    const key = h.dataset.sort!;
-    if (sort === key) descending = !descending;
-    else {
-      sort = key;
-      descending = false;
-    }
-    document.querySelectorAll(".grid-head [data-sort]").forEach((x) => x.classList.remove("asc", "desc"));
-    h.classList.add(descending ? "desc" : "asc");
+function thumbFor(row: Row): string {
+  if (!PICTURE_EXTS.has(row.ext)) return `<div class="thumb">${icon("file")}</div>`;
+  const got = thumbs.get(row.id);
+  if (got) return `<div class="thumb"><img src="${got}" alt="" loading="lazy"></div>`;
+  if (got === null) return `<div class="thumb">${icon("photo")}</div>`;
+  if (!asking.has(row.id)) {
+    asking.add(row.id);
+    call<string | null>("thumbnail", { id: row.id })
+      .then((src) => thumbs.set(row.id, src))
+      .catch(() => thumbs.set(row.id, null))
+      .finally(() => {
+        asking.delete(row.id);
+        results.refresh();
+      });
+  }
+  return `<div class="thumb">${icon("photo")}</div>`;
+}
+
+function tile(row: Row | undefined, _index: number, selected: boolean): string {
+  if (!row) return `<div class="tile"><div class="thumb"></div><div class="meta"><span class="name">…</span></div></div>`;
+  const h = health(row);
+  return `<div class="tile ${selected ? "selected" : ""}">
+    ${thumbFor(row)}
+    <span class="pick">${selected ? icon("check") : ""}</span>
+    <div class="meta">
+      <span class="name" title="${escapeHtml(row.path)}">${escapeHtml(row.name)}</span>
+      <span class="sub"><span>${bytes(row.size)}</span><span class="badge ${h.cls}">${h.label}</span></span>
+    </div>
+  </div>`;
+}
+
+function listRow(row: Row | undefined, _index: number, selected: boolean): string {
+  if (!row) return `<div class="vrow"><span class="name muted">…</span></div>`;
+  const h = health(row);
+  return `<div class="vrow ${selected ? "selected" : ""}" style="height:100%">
+    <input type="checkbox" ${selected ? "checked" : ""} tabindex="-1" />
+    ${icon(PICTURE_EXTS.has(row.ext) ? "photo" : "file")}
+    <span class="name" title="${escapeHtml(row.path)}">${escapeHtml(row.name)}</span>
+    <span class="where">${escapeHtml(row.path)}</span>
+    <span class="size">${bytes(row.size)}</span>
+    <span class="size">${when(row.modified)}</span>
+    <span class="badge ${h.cls}">${h.label}</span>
+  </div>`;
+}
+
+const results = new ResultsView($("#results"), {
+  lineHeight: 190,
+  perLine: 5,
+  render: tile,
+  emptyHtml: `${icon("empty")}<b>Nothing here yet</b><span class="faint">Run a scan, or widen the filter.</span>`,
+  onSelectionChange: (n) => {
+    $("#selection").textContent = n ? `${n.toLocaleString()} selected` : "Nothing selected";
+    $<HTMLButtonElement>("#recover").disabled = n === 0;
+    $("#save-n").textContent = n.toLocaleString();
+  },
+});
+
+function tilesPerLine(): number {
+  const w = $("#results").clientWidth || 1200;
+  return Math.max(2, Math.min(8, Math.floor(w / 210)));
+}
+
+function applyShape() {
+  if (state.tiles) results.setShape(190, tilesPerLine(), tile);
+  else results.setShape(40, 1, listRow);
+  $("#view-tiles").classList.toggle("primary", state.tiles);
+  $("#view-list").classList.toggle("primary", !state.tiles);
+}
+
+async function openResults() {
+  show("w-results");
+  await applyFilter();
+}
+
+async function applyFilter() {
+  const filter: Filter = {
+    text: state.search,
+    bands: [],
+    kinds: [],
+    exts: CATEGORIES[state.category] ?? [],
+    min_size: null,
+    sort: "size",
+    descending: true,
+  };
+  $("#count").textContent = "Sorting…";
+  const n = await call<number>("set_view", { filter });
+  thumbs.clear();
+  results.setCount(n);
+  applyShape();
+  $("#count").textContent = `${n.toLocaleString()} file${n === 1 ? "" : "s"}`;
+}
+
+all(".toolbar .chip").forEach((c) =>
+  c.addEventListener("click", () => {
+    state.category = c.getAttribute("data-cat")!;
+    all(".toolbar .chip").forEach((x) => x.setAttribute("aria-pressed", String(x === c)));
+    state.tiles = state.category === "photos";
     applyFilter();
   }),
 );
+let searchTimer = 0;
+$("#search").addEventListener("input", (e) => {
+  state.search = (e.target as HTMLInputElement).value.trim();
+  clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(applyFilter, 250);
+});
+$("#view-tiles").addEventListener("click", () => {
+  state.tiles = true;
+  applyShape();
+});
+$("#view-list").addEventListener("click", () => {
+  state.tiles = false;
+  applyShape();
+});
+$("#select-all").addEventListener("click", () => results.selectAll());
+$("#select-none").addEventListener("click", () => results.clearSelection());
+$("#results-back").addEventListener("click", () => show("w-where"));
+$("#recover").addEventListener("click", () => show("w-save"));
+window.addEventListener("resize", () => {
+  if (!$("#w-results").hidden && state.tiles) applyShape();
+});
 
-function currentFilter(): Filter {
-  const checked = (name: string) =>
-    [...document.querySelectorAll<HTMLInputElement>(`input[name=${name}]:checked`)].map((i) => i.value);
-  const exts = $<HTMLInputElement>("#f-ext")
-    .value.split(/[,\s]+/)
-    .map((s) => s.trim().toLowerCase().replace(/^\./, ""))
-    .filter(Boolean);
-  const min = Number($<HTMLInputElement>("#f-min").value);
-  return {
-    text: $<HTMLInputElement>("#f-text").value.trim(),
-    bands: checked("band"),
-    kinds: checked("kind"),
-    exts,
-    min_size: min > 0 ? Math.round(min * 1024) : null,
-    sort,
-    descending,
-  };
-}
+// ---------------------------------------------------------------------------
+// step 5: save
+// ---------------------------------------------------------------------------
 
-let filterSeq = 0;
-async function applyFilter() {
-  const seq = ++filterSeq;
-  $("#result-count").textContent = "Filtering…";
-  const t0 = performance.now();
+$("#choose-folder").addEventListener("click", async () => {
+  const folder = await pickFolder();
+  if (!folder) return;
+  state.folder = folder;
+  $("#folder").textContent = folder;
+  $<HTMLButtonElement>("#save-start").disabled = false;
+});
+$("#save-back").addEventListener("click", () => show("w-results"));
+
+$("#save-start").addEventListener("click", async () => {
+  const rows = await results.selectedRows();
+  $("#save-progress").hidden = false;
+  $("#save-status").textContent = `Writing ${rows.length.toLocaleString()} files to ${state.folder}…`;
+  $<HTMLButtonElement>("#save-start").disabled = true;
   try {
-    const n = await call<number>("set_view", { filter: currentFilter() });
-    if (seq !== filterSeq) return;
-    grid.setCount(n);
-    $("#result-count").textContent = `${n.toLocaleString()} rows (${((performance.now() - t0) / 1000).toFixed(1)} s)`;
+    const written = await call<Written[]>("restore", {
+      ids: rows.map((r) => r.id),
+      out: state.folder,
+      reassemble: $<HTMLInputElement>("#reassemble").checked,
+    });
+    const short = written.filter((w) => w.notes.some((n) => n.includes("short"))).length;
+    $("#done-title").textContent = `${written.length.toLocaleString()} file${written.length === 1 ? "" : "s"} recovered`;
+    $("#done-sub").textContent = `Saved in ${state.folder}`;
+    $("#done-detail").innerHTML = `
+      <dt>From</dt><dd>${escapeHtml(state.sourceLabel || state.source)}</dd>
+      <dt>Asked for</dt><dd>${rows.length.toLocaleString()}</dd>
+      <dt>Written</dt><dd>${written.length.toLocaleString()}</dd>
+      ${short ? `<dt>Incomplete</dt><dd>${short} file(s) had parts that could not be read</dd>` : ""}`;
+    show("w-done");
   } catch (e) {
-    $("#result-count").textContent = String(e);
+    $("#save-status").innerHTML = `<span style="color:var(--bad)">${escapeHtml(String(e))}</span>`;
+    $<HTMLButtonElement>("#save-start").disabled = false;
+  } finally {
+    $("#save-progress").hidden = true;
+  }
+});
+
+$("#open-folder").addEventListener("click", () => call("open_folder", { path: state.folder }));
+$("#done-more").addEventListener("click", () => show("w-what"));
+
+// ---------------------------------------------------------------------------
+// phone
+// ---------------------------------------------------------------------------
+
+async function runCli(args: string[], out: HTMLElement) {
+  out.hidden = false;
+  out.textContent = `rc ${args.join(" ")}\n…`;
+  try {
+    const r = await call<CliOutput>("run_cli", { args });
+    let body = r.stdout;
+    try {
+      body = JSON.stringify(JSON.parse(r.stdout), null, 2);
+    } catch {
+      /* not JSON */
+    }
+    out.textContent = `${body || r.stderr || "(no output)"}`;
+  } catch (e) {
+    out.textContent = String(e);
   }
 }
-let filterTimer = 0;
-document.querySelectorAll<HTMLInputElement>(".filters input").forEach((i) =>
-  i.addEventListener(i.type === "text" || i.type === "number" ? "input" : "change", () => {
-    clearTimeout(filterTimer);
-    filterTimer = window.setTimeout(applyFilter, 300);
+
+$("#phone-check").addEventListener("click", () => runCli(["android", "checklist"], $("#phone-out")));
+$("#phone-pull").addEventListener("click", async () => {
+  const folder = await pickFolder();
+  if (folder) runCli(["android", "pull", "--out", folder], $("#phone-out"));
+});
+$("#ios-find").addEventListener("click", () => runCli(["ios", "backups"], $("#ios-out")));
+$("#ios-trashed").addEventListener("click", async () => {
+  const folder = await pickFolder();
+  if (folder) runCli(["ios", "trashed", folder], $("#ios-out"));
+});
+$("#phone-back").addEventListener("click", () => show("w-what"));
+
+// ---------------------------------------------------------------------------
+// advanced view
+// ---------------------------------------------------------------------------
+
+$("#to-advanced").addEventListener("click", () => {
+  show("adv");
+  advResults.relayout();
+});
+$("#to-wizard").addEventListener("click", () => show(state.source ? "w-results" : "w-what"));
+all<HTMLButtonElement>(".tabs [data-panel]").forEach((b) =>
+  b.addEventListener("click", () => {
+    all(".tabs [data-panel]").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
+    all<HTMLElement>("#adv .panel").forEach((p) => (p.hidden = p.id !== b.dataset.panel));
+    if (b.dataset.panel === "p-results") advResults.relayout();
   }),
 );
 
-$("#synthetic").addEventListener("click", async () => {
-  const n = Number($<HTMLInputElement>("#synthetic-n").value);
-  $("#result-count").textContent = `Adding ${n.toLocaleString()} synthetic rows…`;
+const advResults = new ResultsView($("#adv-results"), {
+  lineHeight: 34,
+  perLine: 1,
+  render: (row, _i, selected) => {
+    if (!row) return `<div class="vrow"><span class="name muted">…</span></div>`;
+    const h = health(row);
+    return `<div class="vrow ${selected ? "selected" : ""}" style="height:100%">
+      <span class="badge ${h.cls}">${row.band || row.status}</span>
+      <span class="name">${escapeHtml(row.name)}</span>
+      <span class="where">${escapeHtml(row.path)}</span>
+      <span class="size">${bytes(row.size)}</span>
+      <span class="size">${escapeHtml(row.kind)}</span>
+    </div>`;
+  },
+  emptyHtml: `${icon("empty")}<b>No rows</b>`,
+  onSelectionChange: (n) => {
+    $("#adv-selection").textContent = n ? `${n.toLocaleString()} selected` : "Nothing selected";
+    $<HTMLButtonElement>("#adv-recover").disabled = n === 0;
+  },
+});
+
+
+
+async function applyAdvancedFilter() {
+  const checked = (name: string) => all<HTMLInputElement>(`input[name=${name}]:checked`).map((i) => i.value);
+  const filter: Filter = {
+    text: $<HTMLInputElement>("#adv-search").value.trim(),
+    bands: checked("band"),
+    kinds: checked("kind"),
+    exts: $<HTMLInputElement>("#adv-ext")
+      .value.split(/[\s,]+/)
+      .map((s) => s.trim().toLowerCase().replace(/^\./, ""))
+      .filter(Boolean),
+    min_size: null,
+    sort: null,
+    descending: false,
+  };
+  $("#adv-count").textContent = "Filtering…";
   const t0 = performance.now();
-  await call("synthetic", { count: n });
-  await applyFilter();
-  $("#result-count").textContent += ` · added in ${((performance.now() - t0) / 1000).toFixed(1)} s`;
+  const n = await call<number>("set_view", { filter });
+  advResults.setCount(n);
+  $("#adv-count").textContent = `${n.toLocaleString()} rows · ${((performance.now() - t0) / 1000).toFixed(1)} s`;
+}
+
+let advTimer = 0;
+all<HTMLInputElement>("#p-results input").forEach((i) =>
+  i.addEventListener(i.type === "checkbox" ? "change" : "input", () => {
+    clearTimeout(advTimer);
+    advTimer = window.setTimeout(applyAdvancedFilter, 250);
+  }),
+);
+
+$("#adv-pick").addEventListener("click", async () => {
+  const p = await pickImageFile();
+  if (p) $<HTMLInputElement>("#adv-source").value = p;
+});
+$("#adv-fs").addEventListener("click", async () => {
+  $<HTMLButtonElement>("#adv-stop").disabled = false;
+  await call("scan_filesystems", { source: $<HTMLInputElement>("#adv-source").value.trim() }).catch(
+    (e) => ($("#adv-status").textContent = String(e)),
+  );
+});
+$("#adv-carve").addEventListener("click", async () => {
+  $<HTMLButtonElement>("#adv-stop").disabled = false;
+  await call("carve", { source: $<HTMLInputElement>("#adv-source").value.trim() }).catch(
+    (e) => ($("#adv-status").textContent = String(e)),
+  );
+});
+$("#adv-stop").addEventListener("click", () => call("stop"));
+$("#synthetic").addEventListener("click", async () => {
+  const count = Number($<HTMLInputElement>("#synthetic-n").value);
+  $("#adv-status").textContent = `Adding ${count.toLocaleString()} synthetic rows…`;
+  const t0 = performance.now();
+  await call("synthetic", { count });
+  await applyAdvancedFilter();
+  $("#adv-status").textContent = `Added in ${((performance.now() - t0) / 1000).toFixed(1)} s`;
 });
 $("#clear").addEventListener("click", async () => {
   await call("clear");
-  await applyFilter();
+  await applyAdvancedFilter();
 });
-
-// ---------------------------------------------------------------------------
-// detail: preview, reasons, hex, restore
-// ---------------------------------------------------------------------------
-
-let current: Row | null = null;
-let hexSkip = 0;
-let selection: Row[] = [];
-
-grid.onSelect = (rows) => {
-  selection = rows;
-  current = rows.length === 1 ? rows[0] : null;
-  $("#sel-count").textContent = rows.length ? `${rows.length.toLocaleString()} selected` : "Nothing selected";
-  $<HTMLButtonElement>("#restore").disabled = rows.length === 0 || !inTauri;
-  const d = $("#detail");
-  if (!current) {
-    d.innerHTML = rows.length ? `<p class="muted">${rows.length} rows selected.</p>` : `<p class="muted">Select a row.</p>`;
-    $("#hex").textContent = "";
-    return;
-  }
-  const r = current;
-  d.innerHTML = `
-    <h3>${escapeHtml(r.name)}</h3>
-    <p class="muted">${escapeHtml(r.path)}</p>
-    <dl>
-      <dt>Rating</dt><dd>${r.band ? `<span class="pill ${r.band.toLowerCase()}">${r.band} ${r.score}</span>` : escapeHtml(r.status)}</dd>
-      <dt>Size</dt><dd>${fmtBytes(r.size)} (${r.size.toLocaleString()} bytes)</dd>
-      <dt>Device offset</dt><dd>${r.offset ?? "unknown"}</dd>
-      <dt>Source</dt><dd>${escapeHtml(r.source)}</dd>
-    </dl>
-    <h4>Why this rating</h4>
-    <pre class="reasons">${escapeHtml(r.reasons || "—")}</pre>
-    <div id="preview-img" class="muted">${inTauri ? "Rendering preview…" : "Previews need the desktop app."}</div>`;
-  hexSkip = 0;
-  if (inTauri && r.kind !== "synthetic") {
-    call<string>("preview", { id: r.id })
-      .then((src) => {
-        if (current?.id === r.id) $("#preview-img").innerHTML = `<img src="${src}" alt="preview">`;
-      })
-      .catch((e) => {
-        if (current?.id === r.id) $("#preview-img").textContent = `No preview: ${e}`;
-      });
-    loadHex();
-  }
-};
-
-async function loadHex() {
-  if (!current || !inTauri) return;
+$("#adv-recover").addEventListener("click", async () => {
+  const folder = await pickFolder();
+  if (!folder) return;
+  const rows = await advResults.selectedRows();
+  $("#adv-selection").textContent = `Writing ${rows.length} files…`;
   try {
-    const v = await call<HexView>("hex", { id: current.id, skip: hexSkip, length: 256 });
-    let out = "";
-    for (let i = 0; i < v.bytes.length; i += 16) {
-      const row = v.bytes.slice(i, i + 16);
-      out += `${(v.offset + i).toString(16).padStart(12, "0")}  ${row
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join(" ")
-        .padEnd(48)}  ${row.map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join("")}\n`;
-    }
-    $("#hex").textContent = out;
+    const written = await call<Written[]>("restore", { ids: rows.map((r) => r.id), out: folder, reassemble: true });
+    $("#adv-selection").textContent = `Wrote ${written.length} files to ${folder}`;
   } catch (e) {
-    $("#hex").textContent = String(e);
-  }
-}
-$("#hex-prev").addEventListener("click", () => {
-  hexSkip = Math.max(0, hexSkip - 256);
-  loadHex();
-});
-$("#hex-next").addEventListener("click", () => {
-  hexSkip += 256;
-  loadHex();
-});
-
-$("#restore").addEventListener("click", async () => {
-  const out = $<HTMLInputElement>("#restore-out").value.trim();
-  if (!out) {
-    $("#restore-status").textContent = "Type an output folder on a different disk.";
-    return;
-  }
-  $("#restore-status").textContent = `Writing ${selection.length} files…`;
-  try {
-    const written = await call<{ dest: string }[]>("restore", {
-      ids: selection.map((r) => r.id),
-      out,
-      reassemble: $<HTMLInputElement>("#restore-reassemble").checked,
-    });
-    $("#restore-status").textContent = `Wrote ${written.length} files to ${out}, with restore-manifest.json.`;
-  } catch (e) {
-    $("#restore-status").textContent = `Refused or failed: ${e}`;
+    $("#adv-selection").textContent = String(e);
   }
 });
 
-// ---------------------------------------------------------------------------
-// tools: every other CLI capability, through the rc binary
-// ---------------------------------------------------------------------------
+// The command-line forms.
+const TOOLS: { cmd: string; title: string; fields: { name: string; placeholder: string; required?: boolean; check?: boolean }[] }[] = [
+  { cmd: "android checklist", title: "Android: is the phone ready?", fields: [{ name: "--serial", placeholder: "Serial (if several phones)" }] },
+  { cmd: "android survey", title: "Android: list trashed media and caches", fields: [{ name: "--serial", placeholder: "Serial" }, { name: "--confirm-unlocked", placeholder: "The phone is unlocked", check: true }] },
+  { cmd: "android pull", title: "Android: copy files to this computer", fields: [{ name: "--out", placeholder: "New folder", required: true }, { name: "--confirm-unlocked", placeholder: "The phone is unlocked", check: true }] },
+  { cmd: "ios backups", title: "iPhone: backups on this computer", fields: [] },
+  { cmd: "ios trashed", title: "iPhone: Recently Deleted in a backup", fields: [{ name: "", placeholder: "Backup folder", required: true }] },
+  { cmd: "ios extract", title: "iPhone: extract Recently Deleted", fields: [{ name: "", placeholder: "Backup folder", required: true }, { name: "--out", placeholder: "New folder", required: true }] },
+  { cmd: "host-backups", title: "Phone backups and sync caches on this PC", fields: [] },
+  { cmd: "sqlite", title: "SQLite: recover deleted rows", fields: [{ name: "", placeholder: "Database file", required: true }, { name: "--table", placeholder: "Table (optional)" }] },
+  { cmd: "image", title: "Image a failing drive", fields: [{ name: "", placeholder: "Device", required: true }, { name: "--output", placeholder: "Output .img on another disk", required: true }] },
+  { cmd: "verify", title: "Verify an image against its hashes", fields: [{ name: "", placeholder: "Image file", required: true }] },
+  { cmd: "bridge", title: "Receive files from the phone app over USB", fields: [{ name: "--out", placeholder: "New folder", required: true }, { name: "--port", placeholder: "Port (default 38300)" }] },
+  { cmd: "list-deleted", title: "List deleted entries in full detail", fields: [{ name: "", placeholder: "Device or image", required: true }] },
+];
 
-document.querySelectorAll<HTMLFormElement>("form.tool").forEach((form) =>
-  form.addEventListener("submit", async (e) => {
+$("#tools").innerHTML = TOOLS.map(
+  (t, i) => `<form class="card tool" data-i="${i}">
+    <h3>${escapeHtml(t.title)}</h3>
+    ${t.fields
+      .map((f) =>
+        f.check
+          ? `<label class="check"><input type="checkbox" data-arg="${f.name}" /> ${escapeHtml(f.placeholder)}</label>`
+          : `<input type="text" data-arg="${f.name}" placeholder="${escapeHtml(f.placeholder)}" ${f.required ? "required" : ""} />`,
+      )
+      .join("")}
+    <div class="inline"><button class="primary">Run</button><span class="faint mono">rc ${escapeHtml(t.cmd)}</span></div>
+    <pre class="out" hidden></pre>
+  </form>`,
+).join("");
+
+all<HTMLFormElement>("#tools form").forEach((form) =>
+  form.addEventListener("submit", (e) => {
     e.preventDefault();
-    const out = form.querySelector("pre")!;
-    const args: string[] = form.dataset.cmd!.split(" ");
-    form.querySelectorAll<HTMLInputElement>("input").forEach((i) => {
-      if (i.type === "checkbox") {
-        if (i.checked) args.push(i.name);
-      } else if (i.value.trim()) {
-        if (i.name.startsWith("--")) args.push(i.name, i.value.trim());
-        else args.push(i.value.trim());
+    const tool = TOOLS[Number(form.dataset.i)];
+    const args = tool.cmd.split(" ");
+    form.querySelectorAll<HTMLInputElement>("[data-arg]").forEach((input) => {
+      const arg = input.dataset.arg!;
+      if (input.type === "checkbox") {
+        if (input.checked) args.push(arg);
+      } else if (input.value.trim()) {
+        if (arg) args.push(arg, input.value.trim());
+        else args.push(input.value.trim());
       }
     });
-    out.textContent = `rc ${args.join(" ")}\n…`;
-    try {
-      const r = await call<CliOutput>("run_cli", { args });
-      let body = r.stdout;
-      try {
-        body = JSON.stringify(JSON.parse(r.stdout), null, 2);
-      } catch {
-        /* not JSON: show as is */
-      }
-      out.textContent = `rc ${args.join(" ")}  (exit ${r.code})\n${body}${r.stderr ? `\n${r.stderr}` : ""}`;
-    } catch (err) {
-      out.textContent = String(err);
-    }
+    runCli(args, form.querySelector("pre")!);
   }),
 );
 
-// Expose for the browser measurement of the grid.
-(window as any).rcGrid = grid;
+// ---------------------------------------------------------------------------
 
-loadDevices();
-applyFilter();
+// The first command that answers settles which backend is there; the banner
+// follows it, so the app can never quietly show made-up rows as real ones.
+onBackendKnown((real) => {
+  $("#browser-note").hidden = real;
+  if (!real) {
+    $("#browser-note").innerHTML =
+      `<svg class="i"><use href="#i-warn" /></svg><div><b>Interface preview.</b> The engine did not ` +
+      `answer, so every file listed here is made up. <span class="faint mono">${escapeHtml(bridgeError)}</span></div>`;
+  }
+  $("#mode-note").textContent = real
+    ? "Nothing is ever written to the drive you are recovering from."
+    : "Interface preview — no engine behind it.";
+});
+// Something to settle it before the user touches anything. If the engine is
+// not there, say why on screen rather than only in a console nobody opens.
+call<boolean>("elevation").catch(() => {});
+show("w-what");
+(window as any).rcResults = results;
+

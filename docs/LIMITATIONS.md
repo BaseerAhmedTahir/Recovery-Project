@@ -676,6 +676,13 @@ Browsers cap an element's height near 33 million pixels and 10 million rows is
 about eight rows, and the keyboard (arrows, Page Up/Down, Home/End) is the way
 to move row by row.
 
+The default screen is a five-step wizard (what, where, scan, choose, recover)
+with a picture grid of thumbnails decoded from the recovered bytes; each new
+wizard scan starts from an empty result list. Video thumbnails need ffmpeg and
+show a placeholder without it. The window's own file and folder dialogs come
+from Tauri's dialog plugin, the one capability the app has beyond its own
+commands (`cargo xtask audit-gui` checks that list).
+
 Screens that call the engine directly: sources and devices, filesystem scan,
 carve, the results grid, ratings and their reasons, preview, hex, and restore.
 Everything else - phones, iOS backups, host backups, SQLite row recovery,
@@ -683,10 +690,12 @@ imaging and verification - is a form that runs the `rc` binary beside the app
 with `--json` and shows what it printed. That is deliberate (the CLI is the
 source of truth) and visible: the tab is named for it.
 
-Not implemented in the GUI: choosing folders through a native file dialog
-(paths are typed), a device tree of partitions to pick from (the whole device
-is scanned), and pausing or resuming a carve from the window (`rc carve
---resume` does it).
+Not implemented in the GUI: a device tree of partitions to pick from (the
+whole device is scanned), and pausing or resuming a carve from the window
+(`rc carve --resume` does it). The wizard's save and done screens were checked
+against the browser stand-in; in the real window the flow was driven as far as
+the results grid on the ext4 fixture (46 photos and videos, thumbnails
+rendered), and restore itself is covered by `rc-results/tests/operations.rs`.
 
 ### 3.14a Packaging is built and run here; installing it is not
 

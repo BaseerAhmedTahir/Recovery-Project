@@ -6,187 +6,379 @@
     <title>RECOVERY-CORE</title>
   </head>
   <body>
-    <header>
-      <strong>RECOVERY-CORE</strong>
-      <span class="muted">offline · read-only</span>
-      <nav>
-        <button data-tab="t-results" class="active">Results</button>
-        <button data-tab="t-sources">Sources &amp; scans</button>
-        <button data-tab="t-tools">Phones, SQLite &amp; imaging</button>
-        <button data-tab="t-about">What works</button>
-      </nav>
+    <svg style="display: none" aria-hidden="true">
+      <symbol id="i-photo" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2.5" />
+        <circle cx="8.5" cy="9.5" r="1.8" />
+        <path d="M21 16l-5-5-6 6-2-2-5 5" />
+      </symbol>
+      <symbol id="i-doc" viewBox="0 0 24 24">
+        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+        <path d="M14 3v5h5M9 13h6M9 17h6" />
+      </symbol>
+      <symbol id="i-all" viewBox="0 0 24 24">
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      </symbol>
+      <symbol id="i-phone" viewBox="0 0 24 24">
+        <rect x="6" y="2.5" width="12" height="19" rx="2.5" />
+        <path d="M10.5 18.5h3" />
+      </symbol>
+      <symbol id="i-drive" viewBox="0 0 24 24">
+        <rect x="2.5" y="5" width="19" height="14" rx="2.5" />
+        <circle cx="17" cy="12" r="1.6" />
+        <path d="M6 12h6" />
+      </symbol>
+      <symbol id="i-card" viewBox="0 0 24 24">
+        <path d="M6 3h9l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+        <path d="M9 7v3M12 7v3M15 8v2" />
+      </symbol>
+      <symbol id="i-file" viewBox="0 0 24 24">
+        <path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z" />
+        <path d="M13 3v6h6" />
+      </symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24">
+        <path d="M12 3l7 3v6c0 4.5-3 8.2-7 9-4-.8-7-4.5-7-9V6z" />
+        <path d="M9.5 12.2l1.8 1.8 3.4-3.6" />
+      </symbol>
+      <symbol id="i-warn" viewBox="0 0 24 24">
+        <path d="M10.3 3.9L2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+        <path d="M12 9v4.5M12 17.2v.1" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24">
+        <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
+        <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
+        <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
+        <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
+      </symbol>
+      <symbol id="i-list" viewBox="0 0 24 24">
+        <path d="M4 6.5h16M4 12h16M4 17.5h16" />
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24">
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" />
+      </symbol>
+      <symbol id="i-empty" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" /><path d="M8.5 14.5s1.3-1.5 3.5-1.5 3.5 1.5 3.5 1.5M9 9.5h.01M15 9.5h.01" />
+      </symbol>
+    </svg>
+
+    <header class="titlebar">
+      <div class="brand"><span class="dot"></span> RECOVERY-CORE</div>
+      <span class="faint" id="mode-note">Nothing is ever written to the drive you are recovering from.</span>
+      <div class="right">
+        <button id="to-advanced">Advanced view</button>
+      </div>
     </header>
-    <div id="preview-banner" class="banner" hidden>
-      Browser preview with a mock backend: devices, scans, previews and restore need the desktop app.
-    </div>
+
+    <div id="stepper" class="stepper" hidden></div>
+
     <main>
-      <section id="t-results">
-        <div class="filters">
-          <input id="f-text" type="text" placeholder="Path contains…" />
-          <label><input type="checkbox" name="band" value="GREEN" /> Green</label>
-          <label><input type="checkbox" name="band" value="YELLOW" /> Yellow</label>
-          <label><input type="checkbox" name="band" value="RED" /> Red</label>
-          <span class="sep"></span>
-          <label><input type="checkbox" name="kind" value="deleted" /> Deleted</label>
-          <label><input type="checkbox" name="kind" value="carved" /> Carved</label>
-          <label><input type="checkbox" name="kind" value="synthetic" /> Synthetic</label>
-          <input id="f-ext" type="text" placeholder="Types: jpg, mp4" size="12" />
-          <input id="f-min" type="number" placeholder="Min KiB" min="0" style="width: 7em" />
-          <span id="result-count" class="muted"></span>
-        </div>
-        <div class="results">
-          <div class="grid-wrap">
-            <div class="grid-head">
-              <div style="width: 84px" data-sort="score">Rating</div>
-              <div style="width: 260px" data-sort="name">Name</div>
-              <div style="width: 420px" data-sort="path">Path</div>
-              <div style="width: 70px" data-sort="ext">Type</div>
-              <div style="width: 100px" data-sort="size">Size</div>
-              <div style="width: 140px" data-sort="modified">Modified</div>
-              <div style="width: 90px" data-sort="kind">Found by</div>
-              <div style="width: 240px">Source</div>
-            </div>
-            <div id="grid"></div>
+      <!-- ================================================= wizard ======= -->
+      <section id="w-what" class="page">
+        <div class="center stack">
+          <div>
+            <h1>What would you like to get back?</h1>
+            <p class="muted">Pick one. You can change it after the scan.</p>
           </div>
-          <aside>
-            <div id="detail"><p class="muted">Select a row.</p></div>
-            <div class="hex-head">
-              <h4>Hex</h4>
-              <button id="hex-prev">◀ 256</button><button id="hex-next">256 ▶</button>
+          <div class="choices">
+            <button class="choice" data-kind="photos">
+              <svg class="i"><use href="#i-photo" /></svg>
+              <b>Photos &amp; videos</b>
+              <span>Pictures, camera clips, screenshots</span>
+            </button>
+            <button class="choice" data-kind="documents">
+              <svg class="i"><use href="#i-doc" /></svg>
+              <b>Documents</b>
+              <span>PDF, Word, Excel, text, databases</span>
+            </button>
+            <button class="choice" data-kind="everything">
+              <svg class="i"><use href="#i-all" /></svg>
+              <b>Everything</b>
+              <span>Every deleted file that can be found</span>
+            </button>
+            <button class="choice" data-kind="phone">
+              <svg class="i"><use href="#i-phone" /></svg>
+              <b>From a phone</b>
+              <span>Android over USB, or an iPhone backup</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="w-where" class="page" hidden>
+        <div class="center stack">
+          <div>
+            <h1>Where were they?</h1>
+            <p class="muted" id="where-sub">Choose the drive, memory card or USB stick to search.</p>
+          </div>
+          <div id="elevation-notice"></div>
+          <div id="device-list" class="rows"></div>
+          <label class="check">
+            <input type="checkbox" id="deep" checked />
+            Deep scan: also search every sector for files the drive has forgotten (slower, finds more)
+          </label>
+          <div class="inline">
+            <button id="refresh-devices" class="ghost">Refresh list</button>
+            <button id="pick-image" class="ghost">Use a disk image file…</button>
+            <span class="grow"></span>
+            <button id="where-back" class="ghost"><svg class="i"><use href="#i-back" /></svg> Back</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="w-phone" class="page" hidden>
+        <div class="center stack">
+          <div>
+            <h1>Recover from a phone</h1>
+            <p class="muted">
+              An Android phone is read over the USB cable. An iPhone is read from a backup already
+              on this computer.
+            </p>
+          </div>
+          <div class="card pad stack">
+            <h3>Android over USB</h3>
+            <ol class="muted" style="margin: 0; padding-left: 20px; line-height: 1.9">
+              <li>Unlock the phone and keep it unlocked.</li>
+              <li>Turn on <b>USB debugging</b> (Settings › About phone › tap Build number 7 times, then Developer options).</li>
+              <li>Plug it in and tap <b>Allow</b> on the phone.</li>
+            </ol>
+            <div class="inline">
+              <button id="phone-check" class="primary">Check the phone</button>
+              <button id="phone-pull">Copy recoverable files to this computer…</button>
             </div>
-            <pre id="hex"></pre>
-            <div class="restore">
-              <h4>Restore</h4>
-              <p id="sel-count" class="muted">Nothing selected</p>
-              <input id="restore-out" type="text" placeholder="Output folder on a different disk" />
-              <label><input id="restore-reassemble" type="checkbox" checked /> Reassemble fragmented carved files</label>
-              <button id="restore" disabled>Restore selected</button>
-              <p id="restore-status" class="muted"></p>
+            <pre class="out" id="phone-out" hidden></pre>
+          </div>
+          <div class="card pad stack">
+            <h3>iPhone backup on this computer</h3>
+            <div class="inline">
+              <button id="ios-find" class="primary">Find backups</button>
+              <button id="ios-trashed">List "Recently Deleted" in a backup…</button>
             </div>
-          </aside>
-        </div>
-        <div class="footer">
-          <input id="synthetic-n" type="number" value="10000000" min="1" style="width: 9em" />
-          <button id="synthetic">Add synthetic rows</button>
-          <button id="clear">Clear results</button>
-          <span class="muted">Synthetic rows exercise the grid at scale; they have no content.</span>
+            <pre class="out" id="ios-out" hidden></pre>
+          </div>
+          <div class="inline">
+            <button id="phone-back" class="ghost"><svg class="i"><use href="#i-back" /></svg> Back</button>
+          </div>
         </div>
       </section>
 
-      <section id="t-sources" hidden>
-        <h2>Source</h2>
-        <p class="muted">
-          Devices are only ever opened read-only. Recovered files are written only to a folder on a
-          different disk; a destination on the device being read is refused.
-        </p>
-        <button id="refresh-devices">Refresh devices</button>
-        <div id="devices"></div>
-        <label class="wide">Device or image file <input id="source" type="text" placeholder="\\.\PhysicalDrive2 or D:\images\card.img" /></label>
-        <div class="row">
-          <button id="scan-fs">Find deleted files (filesystem)</button>
-          <button id="carve">Carve by signature (whole device)</button>
-          <button id="stop" disabled>Stop</button>
-        </div>
-        <progress id="progress" max="1" value="0"></progress>
-        <p id="scan-status" class="muted"></p>
-        <ul id="scan-notes"></ul>
-      </section>
-
-      <section id="t-tools" hidden>
-        <p class="muted">These run the <code>rc</code> command line beside this app and show its output.</p>
-        <div class="tools">
-          <form class="tool" data-cmd="android checklist">
-            <h3>Android: checklist</h3>
-            <input name="--serial" placeholder="Serial (if several phones)" />
-            <button>Check</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="android survey">
-            <h3>Android: list trashed media &amp; caches</h3>
-            <input name="--serial" placeholder="Serial" />
-            <label><input type="checkbox" name="--confirm-unlocked" /> I confirm the phone is unlocked</label>
-            <button>Survey</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="android pull">
-            <h3>Android: pull into a folder</h3>
-            <input name="--out" placeholder="New output folder" required />
-            <input name="--serial" placeholder="Serial" />
-            <label><input type="checkbox" name="--confirm-unlocked" /> I confirm the phone is unlocked</label>
-            <button>Pull</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="ios backups">
-            <h3>iOS: backups on this computer</h3>
-            <button>List</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="ios trashed">
-            <h3>iOS: Recently Deleted in a backup</h3>
-            <input name="backup" placeholder="Backup folder" required />
-            <button>List</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="ios extract">
-            <h3>iOS: extract Recently Deleted</h3>
-            <input name="backup" placeholder="Backup folder" required />
-            <input name="--out" placeholder="New output folder" required />
-            <button>Extract</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="host-backups">
-            <h3>Phone backups &amp; sync caches on this computer</h3>
-            <button>Find</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="sqlite">
-            <h3>SQLite: recover deleted rows</h3>
-            <input name="db" placeholder="Database file (its -wal is read too)" required />
-            <input name="--table" placeholder="Table (optional)" />
-            <button>Recover</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="image">
-            <h3>Image a failing drive</h3>
-            <input name="source" placeholder="Device" required />
-            <input name="--output" placeholder="Output .img on a different disk" required />
-            <button>Image</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="verify">
-            <h3>Verify an image against its hashes</h3>
-            <input name="image" placeholder="Image file" required />
-            <button>Verify</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="bridge">
-            <h3>Receive from the phone app over USB</h3>
-            <input name="--out" placeholder="New output folder" required />
-            <input name="--port" placeholder="Port (default 38300)" />
-            <button>Wait for the phone</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="extract">
-            <h3>Write carved candidates out</h3>
-            <input name="source" placeholder="Device or image" required />
-            <input name="--index" placeholder="Index file from a carve" required />
-            <input name="--out" placeholder="New output folder" required />
-            <label><input type="checkbox" name="--reassemble" checked /> Reassemble fragmented files</label>
-            <button>Extract</button><pre></pre>
-          </form>
-          <form class="tool" data-cmd="list-deleted">
-            <h3>List deleted entries (full detail)</h3>
-            <input name="source" placeholder="Device or image" required />
-            <button>List</button><pre></pre>
-          </form>
+      <section id="w-scan" class="page" hidden>
+        <div class="center stack">
+          <div>
+            <h1 id="scan-title">Looking for your files…</h1>
+            <p class="muted" id="scan-source"></p>
+          </div>
+          <div class="card pad stack">
+            <div class="bar" id="scan-bar"><i style="width: 0%"></i></div>
+            <div class="inline">
+              <div class="spinner" id="scan-spin"></div>
+              <span id="scan-phase" class="muted">Starting…</span>
+              <span class="grow"></span>
+              <b id="scan-found">0 found</b>
+            </div>
+            <div class="inline">
+              <button id="scan-stop">Stop and show what was found</button>
+              <span class="grow"></span>
+              <button id="scan-results" class="primary" hidden>See the files</button>
+            </div>
+          </div>
+          <ul id="scan-notes" class="muted" style="padding-left: 18px"></ul>
         </div>
       </section>
 
-      <section id="t-about" hidden>
-        <h2>What works, and what does not</h2>
-        <table class="caps">
-          <tr><td>NTFS, FAT12/16/32, exFAT</td><td class="ok">Deleted files, folder tree, ratings, restore</td></tr>
-          <tr><td>ext2/3/4</td><td class="ok">Deleted files through the JBD2 journal while it still holds them</td></tr>
-          <tr class="off"><td>APFS, HFS+</td><td>Detection only — deleted-file recovery is not implemented. Carve instead.</td></tr>
-          <tr><td>Signature carving</td><td class="ok">44 formats, 28 validated; resumable</td></tr>
-          <tr><td>Fragment reassembly</td><td class="partial">Some fragmented JPEG/MP4/PNG files, not most</td></tr>
-          <tr><td>SSDs with TRIM</td><td class="partial">Deleted data is usually already erased by the drive</td></tr>
-          <tr><td>Android over USB</td><td class="partial">Trashed media and caches; not verified on a real phone yet</td></tr>
-          <tr><td>iOS backups</td><td class="partial">Unencrypted backups only; encrypted ones are refused</td></tr>
-          <tr class="off"><td>Phone internal storage, block level</td><td>Not possible: file-based encryption</td></tr>
-        </table>
-        <p class="muted">The full list is docs/LIMITATIONS.md.</p>
+      <section id="w-results" class="page" hidden>
+        <div class="wide">
+          <div class="toolbar">
+            <button class="chip" data-cat="photos" aria-pressed="false">Photos &amp; videos</button>
+            <button class="chip" data-cat="documents" aria-pressed="false">Documents</button>
+            <button class="chip" data-cat="audio" aria-pressed="false">Audio</button>
+            <button class="chip" data-cat="everything" aria-pressed="true">Everything</button>
+            <input id="search" class="search" type="text" placeholder="Search by name…" />
+            <span class="grow" style="flex: 1"></span>
+            <span id="count" class="muted"></span>
+            <button id="view-tiles" class="icon-btn" title="Picture grid"><svg class="i"><use href="#i-grid" /></svg></button>
+            <button id="view-list" class="icon-btn" title="List"><svg class="i"><use href="#i-list" /></svg></button>
+          </div>
+          <div class="results-body" id="results"></div>
+          <div class="footbar">
+            <button id="select-all">Select all</button>
+            <button id="select-none" class="ghost">Clear</button>
+            <span id="selection" class="muted">Nothing selected</span>
+            <span class="grow"></span>
+            <button id="results-back" class="ghost">Scan something else</button>
+            <button id="recover" class="primary big" disabled>Recover selected files…</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="w-save" class="page" hidden>
+        <div class="center stack">
+          <div>
+            <h1>Where should they be saved?</h1>
+            <p class="muted">
+              Choose a folder on a <b>different</b> drive from the one you are recovering. Saving
+              onto the same drive can destroy the files you have not recovered yet — this app
+              refuses to do it.
+            </p>
+          </div>
+          <div class="card pad stack">
+            <div class="inline">
+              <button id="choose-folder" class="primary"><svg class="i"><use href="#i-folder" /></svg> Choose folder…</button>
+              <span id="folder" class="mono muted">No folder chosen</span>
+            </div>
+            <label class="check">
+              <input type="checkbox" id="reassemble" checked />
+              Try to rebuild files that were split into pieces (slower)
+            </label>
+            <div class="inline">
+              <button id="save-back" class="ghost"><svg class="i"><use href="#i-back" /></svg> Back</button>
+              <span class="grow"></span>
+              <button id="save-start" class="primary big" disabled>Recover <span id="save-n">0</span> files</button>
+            </div>
+            <div id="save-progress" hidden>
+              <div class="bar indeterminate"><i></i></div>
+              <p class="muted" id="save-status" style="margin-top: 8px"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="w-done" class="page" hidden>
+        <div class="center stack">
+          <div class="inline">
+            <svg class="i" style="width: 34px; height: 34px; color: var(--ok)"><use href="#i-check" /></svg>
+            <h1 id="done-title">Done</h1>
+          </div>
+          <p class="muted" id="done-sub"></p>
+          <div class="card pad stack">
+            <dl class="kv" id="done-detail"></dl>
+            <div class="inline">
+              <button id="open-folder" class="primary"><svg class="i"><use href="#i-folder" /></svg> Open the folder</button>
+              <button id="done-more">Recover more files</button>
+            </div>
+          </div>
+          <p class="faint">
+            Every file was checked as it was written and listed in <span class="mono">restore-manifest.json</span>
+            with its SHA-256, so you can prove later that nothing changed.
+          </p>
+        </div>
+      </section>
+
+      <!-- =============================================== advanced ======== -->
+      <section id="adv" class="page" hidden>
+        <div class="tabs">
+          <button data-panel="p-scan" aria-selected="true">Scan</button>
+          <button data-panel="p-results" aria-selected="false">Results</button>
+          <button data-panel="p-tools" aria-selected="false">Command line</button>
+          <button data-panel="p-about" aria-selected="false">What works</button>
+          <span style="flex: 1"></span>
+          <button id="to-wizard" class="ghost">Back to the simple view</button>
+        </div>
+
+        <div id="p-scan" class="panel page">
+          <div class="center stack">
+            <h2>Scan a device or image</h2>
+            <div class="card pad stack">
+              <div class="inline">
+                <input id="adv-source" type="text" placeholder="\\.\PhysicalDrive2 or D:\images\card.img" style="flex: 1" />
+                <button id="adv-pick">Choose file…</button>
+              </div>
+              <div class="inline">
+                <button id="adv-fs" class="primary">Read the filesystem</button>
+                <button id="adv-carve">Carve by signature</button>
+                <button id="adv-stop" disabled>Stop</button>
+              </div>
+              <div class="bar"><i id="adv-bar" style="width: 0%"></i></div>
+              <p class="muted" id="adv-status"></p>
+              <ul id="adv-notes" class="muted" style="padding-left: 18px"></ul>
+            </div>
+            <div class="card pad stack">
+              <h3>Grid benchmark</h3>
+              <p class="muted">
+                Synthetic rows exercise the results view at scale; they have no content behind them.
+              </p>
+              <div class="inline">
+                <input id="synthetic-n" type="number" value="10000000" min="1" style="width: 11em" />
+                <button id="synthetic">Add synthetic rows</button>
+                <button id="clear">Clear all results</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="p-results" class="panel page" hidden>
+          <div class="wide">
+            <div class="toolbar">
+              <input id="adv-search" class="search" type="text" placeholder="Path contains…" />
+              <label class="check"><input type="checkbox" name="band" value="GREEN" /> Intact</label>
+              <label class="check"><input type="checkbox" name="band" value="YELLOW" /> Damaged?</label>
+              <label class="check"><input type="checkbox" name="band" value="RED" /> Likely damaged</label>
+              <label class="check"><input type="checkbox" name="kind" value="deleted" /> From the filesystem</label>
+              <label class="check"><input type="checkbox" name="kind" value="carved" /> Carved</label>
+              <input id="adv-ext" type="text" placeholder="Types: jpg, mp4" style="width: 10em" />
+              <span style="flex: 1"></span>
+              <span id="adv-count" class="muted"></span>
+            </div>
+            <div style="display: flex; gap: 14px; flex: 1; min-height: 0">
+              <div class="results-body" id="adv-results" style="flex: 1"></div>
+              <aside class="card pad" id="adv-detail" style="width: 380px; overflow: auto">
+                <p class="muted">Select a file to see why it is rated the way it is.</p>
+              </aside>
+            </div>
+            <div class="footbar">
+              <span id="adv-selection" class="muted">Nothing selected</span>
+              <span class="grow"></span>
+              <button id="adv-recover" class="primary">Recover selected…</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="p-tools" class="panel page" hidden>
+          <div class="wide stack">
+            <p class="muted">
+              These run the <span class="mono">rc</span> command line that sits beside this app and
+              show exactly what it printed.
+            </p>
+            <div class="tools" id="tools"></div>
+          </div>
+        </div>
+
+        <div id="p-about" class="panel page" hidden>
+          <div class="center stack">
+            <h2>What works, and what does not</h2>
+            <div class="card">
+              <table class="caps">
+                <tr><td>NTFS, FAT, exFAT</td><td><span class="badge ok">Full</span> Deleted files with their names, folders, dates and content.</td></tr>
+                <tr><td>ext2/3/4 (Linux)</td><td><span class="badge ok">Full</span> Through the journal, while it still holds the deletion.</td></tr>
+                <tr><td>APFS, HFS+ (Mac)</td><td><span class="badge plain">Detected only</span> Names cannot be recovered; carving still finds files.</td></tr>
+                <tr><td>Carving by signature</td><td><span class="badge ok">44 formats</span> 28 of them are verified by decoding, not just a header match.</td></tr>
+                <tr><td>Split (fragmented) files</td><td><span class="badge warn">Partly</span> Some JPEG, PNG and MP4 files are rebuilt; most fragmented files are not.</td></tr>
+                <tr><td>SSDs and NVMe drives</td><td><span class="badge bad">Usually nothing</span> The drive erases deleted data itself, often within seconds.</td></tr>
+                <tr><td>Android internal storage</td><td><span class="badge warn">Trash &amp; caches</span> Deleted files are encrypted with keys that are destroyed — no tool recovers them.</td></tr>
+                <tr><td>Android memory card</td><td><span class="badge ok">Full</span> Take the card out and scan it here.</td></tr>
+                <tr><td>iPhone</td><td><span class="badge warn">Backups</span> Unencrypted backups only; "Recently Deleted" photos and their thumbnails.</td></tr>
+              </table>
+            </div>
+            <p class="faint">
+              The measured details are in docs/LIMITATIONS.md next to the program.
+            </p>
+          </div>
+        </div>
       </section>
     </main>
+
+    <div id="browser-note" class="notice warn" style="margin: 12px" hidden>
+      <svg class="i"><use href="#i-warn" /></svg>
+      <div>
+        <b>Browser preview.</b> This is the interface running with a stand-in backend: drives,
+        scans, previews and recovery only work in the desktop app.
+      </div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

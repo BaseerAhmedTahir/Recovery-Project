@@ -1,89 +1,104 @@
-// The results grid: TanStack Virtual (virtual-core) over a row source that is
-// fetched a window at a time.
+// The results view: a virtual list that renders only what is on screen, in
+// either of two shapes — a list of rows, or a grid of picture tiles.
 //
-// Browsers cap an element's height (about 33 million px in Chromium), and 10
-// million rows at 28 px is 280 million. So the scrollable spacer is capped and
-// the scroll position is scaled: the virtualizer is told the offset in row
-// space (scrollTop x scale), and rows are placed back in pixel space relative
-// to the real scrollTop. At 10 million rows one pixel of scrollbar is about
-// eight rows of data; the keyboard moves row by row.
+// Browsers cap an element's height near 33 million pixels, and 10 million rows
+// at 32 px is 320 million, so the scrollable spacer is capped and the scroll
+// position is scaled: the virtualizer is told the offset in row space
+// (scrollTop x scale) and items are placed back into pixel space relative to
+// the real scrollTop. At that size one pixel of scrollbar is several rows, and
+// the keyboard moves one row at a time.
 
 import { Virtualizer, observeElementRect } from "@tanstack/virtual-core";
 import { call, Row } from "./api";
 
-export const ROW_H = 28;
 const MAX_PX = 8_000_000;
 const PAGE = 100;
 
-export interface Column {
-  key: keyof Row | "sel";
-  label: string;
-  width: string;
-  sortable?: boolean;
-  render?: (r: Row) => string;
+export interface ViewOptions {
+  /** How tall one line of items is, in pixels. */
+  lineHeight: number;
+  /** Items per line: 1 for a list, more for a tile grid. */
+  perLine: number;
+  /** Markup for one item. `index` is its position in the view. */
+  render: (row: Row | undefined, index: number, selected: boolean) => string;
+  onSelectionChange?: (count: number) => void;
+  onOpen?: (row: Row) => void;
+  emptyHtml?: string;
 }
 
-export class Grid {
+export class ResultsView {
   private scroller: HTMLElement;
   private spacer: HTMLElement;
   private body: HTMLElement;
+  private emptyEl: HTMLElement;
   private count = 0;
   private scale = 1;
   private cache = new Map<number, Row>();
   private pending = new Set<number>();
   private generation = 0;
   private v: Virtualizer<HTMLElement, HTMLElement>;
-  selected = new Set<number>();
-  anchor: number | null = null;
-  focusIndex = 0;
-  onSelect: (rows: Row[]) => void = () => {};
-  /** Rows rendered in the last frame, for the responsiveness measurement. */
+  private opts: ViewOptions;
+  readonly selected = new Set<number>();
+  private anchor: number | null = null;
+  private focused = 0;
+  /** Lines rendered in the last frame; the responsiveness measurement reads it. */
   lastRendered = 0;
 
-  constructor(host: HTMLElement, private columns: Column[]) {
+  constructor(host: HTMLElement, opts: ViewOptions) {
+    this.opts = opts;
     host.innerHTML = "";
-    this.scroller = document.createElement("div");
-    this.scroller.className = "grid-scroll";
+    this.scroller = el("div", "scroller");
     this.scroller.tabIndex = 0;
-    this.spacer = document.createElement("div");
-    this.spacer.className = "grid-spacer";
-    this.body = document.createElement("div");
-    this.body.className = "grid-body";
+    this.spacer = el("div", "spacer");
+    this.body = el("div", "vbody");
+    this.emptyEl = el("div", "empty");
+    this.emptyEl.innerHTML = opts.emptyHtml ?? "";
     this.spacer.appendChild(this.body);
     this.scroller.appendChild(this.spacer);
     host.appendChild(this.scroller);
+    host.appendChild(this.emptyEl);
 
     this.v = new Virtualizer<HTMLElement, HTMLElement>({
       count: 0,
       getScrollElement: () => this.scroller,
-      estimateSize: () => ROW_H,
-      overscan: 8,
+      estimateSize: () => this.opts.lineHeight,
+      overscan: 4,
       observeElementRect,
       observeElementOffset: (instance, cb) => {
-        const el = instance.scrollElement;
-        if (!el) return;
+        const node = instance.scrollElement;
+        if (!node) return;
         const handler = () => {
           this.rescale();
-          cb(el.scrollTop * this.scale, true);
+          cb(node.scrollTop * this.scale, true);
         };
         handler();
-        el.addEventListener("scroll", handler, { passive: true });
-        return () => el.removeEventListener("scroll", handler);
+        node.addEventListener("scroll", handler, { passive: true });
+        return () => node.removeEventListener("scroll", handler);
       },
-      scrollToFn: (offset, opts, instance) => {
-        instance.scrollElement?.scrollTo({ top: offset / this.scale, behavior: opts.behavior });
+      scrollToFn: (offset, o, instance) => {
+        instance.scrollElement?.scrollTo({ top: offset / this.scale, behavior: o.behavior });
       },
       onChange: () => this.render(),
     });
     this.v._didMount();
     this.v._willUpdate();
 
-    this.scroller.addEventListener("keydown", (e) => this.key(e));
     this.body.addEventListener("click", (e) => {
-      const rowEl = (e.target as HTMLElement).closest(".grid-row") as HTMLElement | null;
-      if (!rowEl) return;
-      this.click(Number(rowEl.dataset.index), e);
+      const item = (e.target as HTMLElement).closest("[data-index]") as HTMLElement | null;
+      if (!item) return;
+      this.click(Number(item.dataset.index), e);
     });
+    this.body.addEventListener("dblclick", (e) => {
+      const item = (e.target as HTMLElement).closest("[data-index]") as HTMLElement | null;
+      const row = item && this.cache.get(Number(item.dataset.index));
+      if (row) this.opts.onOpen?.(row);
+    });
+    this.scroller.addEventListener("keydown", (e) => this.key(e));
+    window.addEventListener("resize", () => this.relayout());
+  }
+
+  private get lines() {
+    return Math.ceil(this.count / this.opts.perLine);
   }
 
   setCount(count: number) {
@@ -93,51 +108,56 @@ export class Grid {
     this.pending.clear();
     this.selected.clear();
     this.anchor = null;
-    this.focusIndex = 0;
-    this.spacer.style.height = `${Math.min(count * ROW_H, MAX_PX)}px`;
-    this.rescale();
-    this.v.setOptions({ ...this.v.options, count });
+    this.focused = 0;
+    this.emptyEl.hidden = count > 0;
+    this.relayout();
     this.scroller.scrollTop = 0;
+    this.opts.onSelectionChange?.(0);
+  }
+
+  /** Re-measure after the shape or the window changed. */
+  relayout() {
+    this.spacer.style.height = `${Math.min(this.lines * this.opts.lineHeight, MAX_PX)}px`;
+    this.rescale();
+    this.v.setOptions({ ...this.v.options, count: this.lines, estimateSize: () => this.opts.lineHeight });
     this.v._willUpdate();
     this.v.measure();
     this.render();
-    this.onSelect([]);
   }
 
-  refresh() {
-    this.generation++;
-    this.cache.clear();
-    this.pending.clear();
-    this.render();
+  setShape(lineHeight: number, perLine: number, render: ViewOptions["render"]) {
+    this.opts = { ...this.opts, lineHeight, perLine, render };
+    this.relayout();
   }
 
-  /** Scroll-pixel to row-space factor. Depends on the viewport height, which
-   * is zero while the grid is hidden, so it is recomputed as it changes. */
   private rescale() {
-    const total = this.count * ROW_H;
-    const spacerPx = Math.min(total, MAX_PX);
+    const total = this.lines * this.opts.lineHeight;
+    const capped = Math.min(total, MAX_PX);
     const vh = this.scroller.clientHeight;
-    this.scale = total > spacerPx && vh > 0 ? (total - vh) / Math.max(1, spacerPx - vh) : total > spacerPx ? total / spacerPx : 1;
+    this.scale =
+      total > capped ? (vh > 0 ? (total - vh) / Math.max(1, capped - vh) : total / capped) : 1;
   }
 
-  private fetch(first: number, last: number) {
+  private fetch(firstLine: number, lastLine: number) {
+    const first = firstLine * this.opts.perLine;
+    const last = Math.min(this.count - 1, (lastLine + 1) * this.opts.perLine - 1);
     const gen = this.generation;
     for (let p = Math.floor(first / PAGE); p <= Math.floor(last / PAGE); p++) {
       if (this.pending.has(p)) continue;
       const start = p * PAGE;
-      if (this.cache.has(start) && this.cache.has(Math.min(start + PAGE, this.count) - 1)) continue;
+      const end = Math.min(start + PAGE, this.count) - 1;
+      if (this.cache.has(start) && this.cache.has(end)) continue;
       this.pending.add(p);
       call<Row[]>("rows", { start, count: PAGE })
         .then((rows) => {
           if (gen !== this.generation) return;
           rows.forEach((r, i) => this.cache.set(start + i, r));
           if (this.cache.size > 20_000) {
-            // Keep memory flat on a long scroll: drop the oldest pages.
-            const keys = [...this.cache.keys()].slice(0, this.cache.size - 10_000);
-            keys.forEach((k) => this.cache.delete(k));
+            [...this.cache.keys()].slice(0, this.cache.size - 10_000).forEach((k) => this.cache.delete(k));
           }
           this.render();
         })
+        .catch(() => {})
         .finally(() => this.pending.delete(p));
     }
   }
@@ -145,23 +165,26 @@ export class Grid {
   private render() {
     this.rescale();
     const items = this.v.getVirtualItems();
-    const top = this.scroller.scrollTop;
-    const shift = top * (this.scale - 1);
     if (items.length) this.fetch(items[0].index, items[items.length - 1].index);
+    const shift = this.scroller.scrollTop * (this.scale - 1);
     let html = "";
-    for (const it of items) {
-      const r = this.cache.get(it.index);
-      const cls = `grid-row${this.selected.has(it.index) ? " selected" : ""}${
-        it.index === this.focusIndex ? " focus" : ""
-      }${r ? ` band-${r.band.toLowerCase()}` : " loading"}`;
-      html += `<div class="${cls}" data-index="${it.index}" style="top:${it.start - shift}px">`;
-      for (const c of this.columns) {
-        let text = "";
-        if (r) text = c.render ? c.render(r) : escapeHtml(String(r[c.key as keyof Row] ?? ""));
-        else if (c.key === "name") text = "…";
-        html += `<div class="cell" style="width:${c.width}">${text}</div>`;
+    for (const line of items) {
+      const top = line.start - shift;
+      for (let c = 0; c < this.opts.perLine; c++) {
+        const index = line.index * this.opts.perLine + c;
+        if (index >= this.count) break;
+        html += `<div class="slot" style="position:absolute;top:${top}px;height:${this.opts.lineHeight}px;${
+          this.opts.perLine > 1
+            ? `left:calc(${(100 / this.opts.perLine).toFixed(4)}% * ${c});width:calc(${(
+                100 / this.opts.perLine
+              ).toFixed(4)}% );padding:6px;`
+            : "left:0;right:0;"
+        }" data-index="${index}">${this.opts.render(
+          this.cache.get(index),
+          index,
+          this.selected.has(index),
+        )}</div>`;
       }
-      html += "</div>";
     }
     this.body.innerHTML = html;
     this.lastRendered = items.length;
@@ -170,63 +193,96 @@ export class Grid {
   private click(index: number, e: MouseEvent) {
     if (e.shiftKey && this.anchor !== null) {
       const [a, b] = [Math.min(this.anchor, index), Math.max(this.anchor, index)];
-      if (b - a > 100_000) return; // a selection this size belongs to a filter
-      if (!e.ctrlKey) this.selected.clear();
-      for (let i = a; i <= b; i++) this.selected.add(i);
+      if (b - a <= 200_000) {
+        if (!(e.ctrlKey || e.metaKey)) this.selected.clear();
+        for (let i = a; i <= b; i++) this.selected.add(i);
+      }
     } else if (e.ctrlKey || e.metaKey) {
-      if (this.selected.has(index)) this.selected.delete(index);
-      else this.selected.add(index);
+      this.selected.has(index) ? this.selected.delete(index) : this.selected.add(index);
       this.anchor = index;
     } else {
-      this.selected.clear();
-      this.selected.add(index);
+      // A plain click toggles: this is a picking list, not a document.
+      this.selected.has(index) ? this.selected.delete(index) : this.selected.add(index);
       this.anchor = index;
     }
-    this.focusIndex = index;
+    this.focused = index;
     this.render();
-    this.emitSelection();
+    this.opts.onSelectionChange?.(this.selected.size);
   }
 
   private key(e: KeyboardEvent) {
-    const page = Math.max(1, Math.floor(this.scroller.clientHeight / ROW_H) - 1);
+    const perScreen = Math.max(1, Math.floor(this.scroller.clientHeight / this.opts.lineHeight)) * this.opts.perLine;
     const moves: Record<string, number> = {
-      ArrowDown: 1,
-      ArrowUp: -1,
-      PageDown: page,
-      PageUp: -page,
+      ArrowDown: this.opts.perLine,
+      ArrowUp: -this.opts.perLine,
+      ArrowRight: 1,
+      ArrowLeft: -1,
+      PageDown: perScreen,
+      PageUp: -perScreen,
       Home: -Infinity,
       End: Infinity,
     };
+    if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      this.selected.has(this.focused) ? this.selected.delete(this.focused) : this.selected.add(this.focused);
+      this.render();
+      this.opts.onSelectionChange?.(this.selected.size);
+      return;
+    }
     if (!(e.key in moves) || this.count === 0) return;
     e.preventDefault();
-    const next = Math.max(0, Math.min(this.count - 1, this.focusIndex + moves[e.key]));
-    this.focusIndex = next;
-    this.selected.clear();
-    this.selected.add(next);
-    this.anchor = next;
-    this.v.scrollToIndex(next, { align: "auto" });
+    this.focused = Math.max(0, Math.min(this.count - 1, this.focused + moves[e.key]));
+    this.v.scrollToIndex(Math.floor(this.focused / this.opts.perLine), { align: "auto" });
     this.render();
-    this.emitSelection();
   }
 
-  private async emitSelection() {
-    const idx = [...this.selected].slice(0, 5000);
-    const missing = idx.filter((i) => !this.cache.has(i));
-    for (const i of missing) {
-      const [r] = await call<Row[]>("rows", { start: i, count: 1 });
-      if (r) this.cache.set(i, r);
+  selectAll() {
+    for (let i = 0; i < this.count; i++) this.selected.add(i);
+    this.render();
+    this.opts.onSelectionChange?.(this.selected.size);
+  }
+
+  clearSelection() {
+    this.selected.clear();
+    this.render();
+    this.opts.onSelectionChange?.(0);
+  }
+
+  /** The rows behind the current selection, fetched if they are not cached. */
+  async selectedRows(limit = 20_000): Promise<Row[]> {
+    const wanted = [...this.selected].slice(0, limit).sort((a, b) => a - b);
+    const missing = wanted.filter((i) => !this.cache.has(i));
+    for (let k = 0; k < missing.length; k += PAGE) {
+      const start = missing[k];
+      const rows = await call<Row[]>("rows", { start, count: PAGE });
+      rows.forEach((r, i) => this.cache.set(start + i, r));
     }
-    this.onSelect(idx.map((i) => this.cache.get(i)).filter((r): r is Row => !!r));
+    return wanted.map((i) => this.cache.get(i)).filter((r): r is Row => !!r);
+  }
+
+  row(index: number): Row | undefined {
+    return this.cache.get(index);
   }
 
   get length() {
     return this.count;
   }
 
-  /** For the measurement: scroll to a fraction of the way down. */
+  /** Used by the responsiveness measurement. */
   scrollToFraction(f: number) {
     this.scroller.scrollTop = f * (this.scroller.scrollHeight - this.scroller.clientHeight);
   }
+
+  /** Re-render in place, for when a thumbnail arrives. */
+  refresh() {
+    this.render();
+  }
+}
+
+function el(tag: string, cls: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.className = cls;
+  return node;
 }
 
 export function escapeHtml(s: string): string {

@@ -292,8 +292,114 @@ async fn run_cli(args: Vec<String>) -> Res<CliOutput> {
     .map_err(err)?
 }
 
+/// Whether this process can open raw devices (Administrator on Windows). The
+/// wizard shows this before it shows an empty list of drives.
+#[tauri::command]
+fn elevation() -> Res<bool> {
+    Ok(rc_device::is_elevated())
+}
+
+/// Start this program again with a request for Administrator rights, and quit.
+/// Windows shows its own consent prompt; nothing happens without the user's
+/// approval there.
+#[tauri::command]
+fn restart_elevated(app: AppHandle) -> Res<()> {
+    let exe = std::env::current_exe().map_err(err)?;
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Start-Process"])
+            .arg(format!("'{}'", exe.display()))
+            .arg("-Verb")
+            .arg("RunAs")
+            .status()
+            .map_err(err)?;
+        if !status.success() {
+            return Err("Windows did not grant Administrator rights".into());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = exe;
+        return Err("run the app with sudo to read raw devices".into());
+    }
+    app.exit(0);
+    Ok(())
+}
+
+/// Show a folder in the system's file manager.
+#[tauri::command]
+fn open_folder(path: String) -> Res<()> {
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    // explorer.exe returns a non-zero exit code even when it works.
+    std::process::Command::new(program)
+        .arg(&path)
+        .spawn()
+        .map_err(err)?;
+    Ok(())
+}
+
+/// The wizard's one scan button: read the filesystem, and when `deep` is set
+/// carve the whole device afterwards. Both report through the same events.
+#[tauri::command]
+fn start_recovery(app: AppHandle, state: State<App>, source: String, deep: bool) -> Res<()> {
+    let dir = state.data_dir.join("indexes");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let index = dir.join(format!("carve-{stamp}.rcindex"));
+    let handle = app.clone();
+    run_scan(app, &state, move |stop, progress| {
+        let mut found = rc_results::scan_filesystems(Path::new(&source), stop, progress)?;
+        if deep && !stop.load(Ordering::SeqCst) {
+            // Add the filesystem's rows first so they are there to look at
+            // while the deep scan runs.
+            let st = handle.state::<App>();
+            let partial = Found {
+                source: found.source.clone(),
+                rows: std::mem::take(&mut found.rows),
+                notes: found.notes.clone(),
+            };
+            if let Ok(summary) = st.store.lock().expect("store").add(partial) {
+                let _ = handle.emit("rows-added", summary.rows_added);
+            }
+            let carved = rc_results::carve(Path::new(&source), &index, stop, progress)?;
+            found.notes.extend(carved.notes);
+            found.rows = carved.rows;
+        }
+        Ok(found)
+    })
+}
+
+/// A small preview for one row, for the results grid. Errors become `None` so
+/// a file that cannot be decoded simply shows no picture.
+#[tauri::command]
+async fn thumbnail(app: AppHandle, id: i64) -> Res<Option<String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = app.state::<App>();
+        let store = st.store.lock().map_err(err)?;
+        Ok(rc_results::preview(&store, id, 220).ok().map(|png| {
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(png)
+            )
+        }))
+    })
+    .await
+    .map_err(err)?
+}
+
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = rc_results::default_store_path()
                 .parent()
@@ -322,7 +428,12 @@ fn main() {
             preview,
             hex,
             restore,
-            run_cli
+            run_cli,
+            elevation,
+            restart_elevated,
+            open_folder,
+            start_recovery,
+            thumbnail
         ])
         .run(tauri::generate_context!())
         .expect("error while running RECOVERY-CORE");

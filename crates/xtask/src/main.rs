@@ -418,11 +418,16 @@ fn audit_gui() -> bool {
         .iter()
         .filter_map(|p| p.as_str())
         .collect();
-    if perms != ["core:default"] {
-        println!("  FAIL: capabilities grant more than core:default: {perms:?}");
+    // The app's own commands, and the system's file-choosing dialog (so a
+    // person picks folders instead of typing paths). Nothing that reaches a
+    // network, runs a program, or reads files from the web view.
+    const ALLOWED_CAPS: &[&str] = &["core:default", "dialog:allow-open"];
+    let extra: Vec<&&str> = perms.iter().filter(|p| !ALLOWED_CAPS.contains(p)).collect();
+    if !extra.is_empty() || !perms.contains(&"core:default") {
+        println!("  FAIL: capabilities grant more than {ALLOWED_CAPS:?}: {extra:?}");
         ok = false;
     } else {
-        println!("  capabilities: core:default only (no plugins, no http, no shell)");
+        println!("  capabilities: {perms:?} (no http, no shell, no filesystem access)");
     }
 
     // The built frontend, if present, must not reach for the network itself.

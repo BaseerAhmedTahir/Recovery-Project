@@ -30,6 +30,18 @@ fn scan_filter_restore_and_preview_on_ext4() {
     assert!(summary.rows_added >= 111, "{summary:?}");
     assert!(!phases.is_empty());
 
+    // The same deleted file recorded twice in the journal is listed once:
+    // no two rows share a path, a size and a starting block.
+    let all = store.set_view(&Filter::default()).unwrap();
+    let mut seen = std::collections::HashSet::new();
+    for r in store.rows(0, all).unwrap() {
+        assert!(
+            seen.insert((r.path.clone(), r.size, r.offset)),
+            "{} is listed twice",
+            r.path
+        );
+    }
+
     // The deleted corpus files, found by filter.
     let deleted: BTreeMap<String, String> = truth["files"]
         .as_object()

@@ -40,9 +40,21 @@ Details, and what is deliberately not bundled, in [packaging/README.md](packagin
 
 ## Using it
 
-**The desktop app** (`rc-gui.exe`): pick a drive or image, *Find deleted files*
-or *Carve by signature*, then filter the results, look at previews and hex, tick
-what you want and restore it to a folder **on a different disk**.
+**The desktop app** (`rc-gui.exe`) is a five-step wizard, like Recuva:
+
+1. **What** — Photos & videos, Documents, Everything, or From a phone.
+2. **Where** — pick a drive or memory card from the list (or a disk image file).
+   Reading a whole disk needs Administrator; the app offers to restart itself
+   with it. Tick *Deep scan* to also search every sector.
+3. **Scan** — one progress bar; *Stop* keeps whatever was found so far.
+4. **Choose** — picture thumbnails or a list, each file marked *Looks intact*,
+   *May be damaged* or *Likely damaged*. Tick what you want.
+5. **Recover** — choose a folder **on a different drive**, and it opens the
+   folder when it is done.
+
+*Advanced view* (top right) has everything else: the raw results table with
+every filter, the reasons behind each rating, and forms for all the
+command-line tools.
 
 **The command line** is the same engine and can do everything:
 
