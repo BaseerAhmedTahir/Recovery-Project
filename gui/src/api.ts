@@ -220,6 +220,21 @@ async function mock<T>(cmd: string, a: any): Promise<T> {
   switch (cmd) {
     case "elevation":
       return false as T;
+    case "startup_request":
+      return null as T;
+    case "check_source": {
+      // A raw drive needs Administrator on Windows; the stand-in says so too,
+      // so the interface's answer to that can be seen without elevation.
+      const source = String(a.source);
+      const raw = /^\\\\[.?]\\[A-Za-z]:$/.test(source) || source.includes("PhysicalDrive");
+      return {
+        ok: !raw,
+        needs_admin: raw,
+        message: raw
+          ? `Windows only lets a program read ${source} with Administrator rights.`
+          : "",
+      } as T;
+    }
     case "volumes":
       return [
         { letter: "C", device_path: "\\\\.\\C:", mount: "C:\\", label: null, filesystem: "NTFS", total_bytes: 476 * 2 ** 30, free_bytes: 88 * 2 ** 30, removable: false, readable: false, note: "requires Administrator to read sector data" },

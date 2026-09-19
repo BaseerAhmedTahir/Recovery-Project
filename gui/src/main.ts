@@ -17,6 +17,14 @@ import {
 } from "./api";
 import { escapeHtml, ResultsView } from "./grid";
 
+interface ScanRequest {
+  source: string;
+  folder: string;
+  deep: boolean;
+  kind: string;
+  label: string;
+}
+
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const all = <T extends HTMLElement = HTMLElement>(sel: string) => [...document.querySelectorAll<T>(sel)];
 const icon = (name: string) => `<svg class="i"><use href="#i-${name}" /></svg>`;
@@ -139,14 +147,21 @@ async function loadVolumes() {
     host.innerHTML = vols
       .map((v, i) => {
         const used = v.total_bytes ? Math.round(((v.total_bytes - v.free_bytes) / v.total_bytes) * 100) : 0;
-        return `<button class="row-item ${v.readable ? "" : "disabled"}" data-v="${i}" ${v.readable ? "" : "disabled"}>
+        // A drive that needs Administrator stays clickable: choosing it leads
+        // to the one-click restart, which is the answer, rather than a row
+        // that cannot be pressed and explains nothing.
+        return `<button class="row-item" data-v="${i}">
           ${icon(v.removable ? "card" : "drive")}
           <span class="grow">
             <b>${escapeHtml(volumeName(v))}</b>
             <small>${escapeHtml(v.filesystem ?? "unknown filesystem")} · ${bytes(v.free_bytes)} free of ${bytes(v.total_bytes)}</small>
           </span>
           <span class="meter" title="${used}% used"><i style="width:${used}%"></i></span>
-          ${v.readable ? '<span class="badge plain">Choose</span>' : `<span class="badge warn">${escapeHtml(v.note ?? "not readable")}</span>`}
+          ${
+            v.readable
+              ? '<span class="badge plain">Choose</span>'
+              : '<span class="badge warn">needs Administrator</span>'
+          }
         </button>`;
       })
       .join("");
@@ -203,7 +218,7 @@ async function loadDevices() {
     }
     host.innerHTML = devices
       .map(
-        (d, i) => `<button class="row-item ${d.readable ? "" : "disabled"}" data-i="${i}" ${d.readable ? "" : "disabled"}>
+        (d, i) => `<button class="row-item" data-i="${i}">
           ${icon(d.removable ? "card" : "drive")}
           <span class="grow">
             <b>${escapeHtml(driveName(d))}</b>
@@ -211,7 +226,11 @@ async function loadDevices() {
               d.rotational === false && !d.removable ? " · SSD" : ""
             }</small>
           </span>
-          ${d.readable ? '<span class="badge plain">Choose</span>' : `<span class="badge warn">${escapeHtml(d.note ?? "not readable")}</span>`}
+          ${
+            d.readable
+              ? '<span class="badge plain">Choose</span>'
+              : '<span class="badge warn">needs Administrator</span>'
+          }
         </button>`,
       )
       .join("");
@@ -261,6 +280,48 @@ $("#pick-image").addEventListener("click", async () => {
 // step 3: scan
 // ---------------------------------------------------------------------------
 
+/** The panel shown when a scan cannot start or could not finish. */
+function showFix(title: string, message: string, needsAdmin: boolean) {
+  $("#scan-title").textContent = title;
+  $("#scan-phase").textContent = "";
+  $("#scan-spin").hidden = true;
+  $<HTMLButtonElement>("#scan-stop").disabled = true;
+  // Nothing is running, so no progress is shown: an empty bar and "0 found"
+  // under an error read as a scan that failed silently.
+  $("#scan-bar").hidden = true;
+  $("#scan-progress-row").hidden = true;
+  $<HTMLButtonElement>("#scan-stop").hidden = true;
+  $("#scan-fix").innerHTML = `<div class="notice ${needsAdmin ? "warn" : "bad"}">
+      ${icon(needsAdmin ? "shield" : "warn")}
+      <div>
+        <b>${escapeHtml(message)}</b>
+        ${
+          needsAdmin
+            ? `<p class="muted" style="margin-top:6px">Windows keeps whole drives out of reach of
+                 ordinary programs. Restarting with Administrator rights carries this scan with
+                 it, so you do not have to start again.</p>`
+            : ""
+        }
+      </div>
+      ${needsAdmin ? '<button id="scan-elevate" class="primary">Restart as Administrator</button>' : ""}
+    </div>`;
+  $("#scan-elevate")?.addEventListener("click", async () => {
+    try {
+      await call("restart_elevated", {
+        request: {
+          source: state.source,
+          folder: state.scope,
+          deep: $<HTMLInputElement>("#deep").checked,
+          kind: state.kind,
+          label: state.sourceLabel,
+        },
+      });
+    } catch (e) {
+      showFix("Windows did not grant Administrator rights", String(e), false);
+    }
+  });
+}
+
 async function startScan(source: string, label: string) {
   foundBefore = 0;
   state.source = source;
@@ -283,6 +344,27 @@ async function startScan(source: string, label: string) {
   $("#scan-results").hidden = true;
   $<HTMLButtonElement>("#scan-stop").disabled = false;
   $("#scan-bar").classList.add("indeterminate");
+  $("#scan-bar").hidden = false;
+  $("#scan-progress-row").hidden = false;
+  $<HTMLButtonElement>("#scan-stop").hidden = false;
+  $("#scan-fix").innerHTML = "";
+  // Ask whether this source can be read at all before pretending to scan it.
+  try {
+    const check = await call<{ ok: boolean; needs_admin: boolean; message: string }>("check_source", {
+      source,
+    });
+    if (!check.ok) {
+      state.scanning = false;
+      showFix(
+        check.needs_admin ? `${label} needs Administrator` : "This cannot be read",
+        check.message,
+        check.needs_admin,
+      );
+      return;
+    }
+  } catch {
+    /* an older backend without the check: fall through and let the scan answer */
+  }
   try {
     // Each scan in the simple view shows its own results only; results from
     // an earlier scan (or an earlier run of the app) would look like
@@ -302,6 +384,11 @@ $("#scan-stop").addEventListener("click", () => {
   call("stop");
 });
 $("#scan-results").addEventListener("click", () => openResults());
+$("#scan-back").addEventListener("click", () => {
+  if (state.scanning) call("stop").catch(() => {});
+  state.scanning = false;
+  show("w-where");
+});
 
 // The deep scan reports its own count from zero; the files the filesystem
 // phase already found must not appear to vanish.
@@ -338,9 +425,16 @@ listen<{ ok: boolean; summary?: { rows_added: number; notes: string[] }; error?:
     $("#scan-bar").classList.remove("indeterminate");
     ($("#scan-bar").querySelector("i") as HTMLElement).style.width = "100%";
     if (!d.ok) {
-      $("#scan-title").textContent = "The scan could not finish";
-      $("#scan-phase").textContent = d.error ?? "";
-      $("#adv-status").textContent = d.error ?? "";
+      const why = d.error ?? "";
+      $("#adv-status").textContent = why;
+      const needsAdmin = /elevation|Administrator|access is denied/i.test(why);
+      showFix(
+        needsAdmin ? `${state.sourceLabel} needs Administrator` : "The scan could not finish",
+        needsAdmin
+          ? `Windows only lets a program read ${state.source} with Administrator rights.`
+          : why,
+        needsAdmin,
+      );
       return;
     }
     const notes = d.summary?.notes ?? [];
@@ -850,7 +944,23 @@ onBackendKnown((real) => {
 });
 // Something to settle it before the user touches anything. If the engine is
 // not there, say why on screen rather than only in a console nobody opens.
-call<boolean>("elevation").catch(() => {});
+// Something to settle it before the user touches anything, and then the scan
+// this window may have been restarted to run.
+call<boolean>("elevation")
+  .catch(() => {})
+  .then(() => call<ScanRequest | null>("startup_request").catch(() => null))
+  .then((req) => {
+    if (!req?.source) return;
+    state.kind = (req.kind || "everything") as typeof state.kind;
+    state.category = state.kind === "phone" ? "everything" : state.kind;
+    all(".toolbar .chip").forEach((c) =>
+      c.setAttribute("aria-pressed", String(c.getAttribute("data-cat") === state.category)),
+    );
+    state.scope = req.folder ?? "";
+    state.scopeLabel = req.label || req.source;
+    $<HTMLInputElement>("#deep").checked = !!req.deep;
+    startScan(req.source, req.label || req.source);
+  });
 show("w-what");
 (window as any).rcResults = results;
 

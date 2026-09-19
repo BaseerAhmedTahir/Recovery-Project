@@ -734,6 +734,26 @@ scan reports only what the filesystem still remembers, and the deep scan is
 switched off for it. Folders on network drives and cloud placeholders are
 refused: there is no volume to read.
 
+### 3.16a Administrator, and what the app does about it
+
+Reading any drive letter or disk needs Administrator on Windows. The app now
+asks the engine whether a source can be read *before* it starts a scan, so a
+drive that needs Administrator produces a panel with a **Restart as
+Administrator** button rather than a scan that fails at the first read. The
+restart carries the request - source, folder, category and whether a deep scan
+was wanted - as command-line arguments, and the new window starts that scan
+straight away. Arguments are wrapped in double quotes inside PowerShell's
+single-quoted argument list: without that a path containing a space arrives at
+the new window split in two, which is how it first behaved.
+
+Drives that need Administrator are listed and clickable rather than greyed out;
+choosing one leads to the restart. Every scan screen has a way back, and no
+screen shows a progress bar for something that is not running.
+
+Windows offers no way to read a raw volume without Administrator, so this is a
+prompt, not a limitation that can be engineered away. What does work without
+it: disk image files.
+
 ### 3.17 What the phone side deliberately will not do
 
 `rc android screen/tap/swipe/key/type` show a phone's display on this computer

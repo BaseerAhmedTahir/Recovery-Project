@@ -224,7 +224,7 @@
           <div class="notice" id="scan-scope" hidden></div>
           <div class="card pad stack">
             <div class="bar" id="scan-bar"><i style="width: 0%"></i></div>
-            <div class="inline">
+            <div class="inline" id="scan-progress-row">
               <div class="spinner" id="scan-spin"></div>
               <span id="scan-phase" class="muted">Starting…</span>
               <span class="grow"></span>
@@ -232,10 +232,14 @@
             </div>
             <div class="inline">
               <button id="scan-stop">Stop and show what was found</button>
+              <button id="scan-back" class="ghost">
+                <svg class="i"><use href="#i-back" /></svg> Choose something else
+              </button>
               <span class="grow"></span>
               <button id="scan-results" class="primary" hidden>See the files</button>
             </div>
           </div>
+          <div id="scan-fix"></div>
           <ul id="scan-notes" class="muted" style="padding-left: 18px"></ul>
         </div>
       </section>

@@ -11,7 +11,7 @@
 
 use base64::Engine;
 use rc_results::{Filter, Found, Progress, Row, ScanSummary, Store};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -384,17 +384,122 @@ fn elevation() -> Res<bool> {
     Ok(rc_device::is_elevated())
 }
 
+/// What was asked for on the command line, so a restart with Administrator
+/// rights can pick the scan up instead of making the person start again.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct ScanRequest {
+    source: String,
+    folder: String,
+    deep: bool,
+    kind: String,
+    label: String,
+}
+
+impl ScanRequest {
+    fn from_args() -> Option<ScanRequest> {
+        let mut req = ScanRequest::default();
+        let mut args = std::env::args().skip(1);
+        while let Some(a) = args.next() {
+            let mut value = || args.next().unwrap_or_default();
+            match a.as_str() {
+                "--source" => req.source = value(),
+                "--folder" => req.folder = value(),
+                "--kind" => req.kind = value(),
+                "--label" => req.label = value(),
+                "--deep" => req.deep = true,
+                _ => {}
+            }
+        }
+        (!req.source.is_empty()).then_some(req)
+    }
+
+    fn to_args(&self) -> Vec<String> {
+        let mut out = vec!["--source".into(), self.source.clone()];
+        if !self.folder.is_empty() {
+            out.push("--folder".into());
+            out.push(self.folder.clone());
+        }
+        if !self.kind.is_empty() {
+            out.push("--kind".into());
+            out.push(self.kind.clone());
+        }
+        if !self.label.is_empty() {
+            out.push("--label".into());
+            out.push(self.label.clone());
+        }
+        if self.deep {
+            out.push("--deep".into());
+        }
+        out
+    }
+}
+
+/// The scan this program was started to run, if it was restarted for one.
+#[tauri::command]
+fn startup_request() -> Res<Option<ScanRequest>> {
+    Ok(ScanRequest::from_args())
+}
+
+/// Whether a source can be read now, before a scan is started against it.
+/// Saying "this needs Administrator" *before* a scan is the difference
+/// between one click and a dead end.
+#[derive(Serialize)]
+struct SourceCheck {
+    ok: bool,
+    needs_admin: bool,
+    message: String,
+}
+
+#[tauri::command]
+fn check_source(source: String) -> Res<SourceCheck> {
+    match rc_device::open(Path::new(&source), None) {
+        Ok(_) => Ok(SourceCheck {
+            ok: true,
+            needs_admin: false,
+            message: String::new(),
+        }),
+        Err(rc_device::DeviceError::NeedsElevation { .. }) => Ok(SourceCheck {
+            ok: false,
+            needs_admin: true,
+            message: format!(
+                "Windows only lets a program read {source} with Administrator rights."
+            ),
+        }),
+        Err(e) => Ok(SourceCheck {
+            ok: false,
+            needs_admin: false,
+            message: e.to_string(),
+        }),
+    }
+}
+
 /// Start this program again with a request for Administrator rights, and quit.
 /// Windows shows its own consent prompt; nothing happens without the user's
 /// approval there.
 #[tauri::command]
-fn restart_elevated(app: AppHandle) -> Res<()> {
+fn restart_elevated(app: AppHandle, request: Option<ScanRequest>) -> Res<()> {
     let exe = std::env::current_exe().map_err(err)?;
     #[cfg(windows)]
     {
-        let status = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", "Start-Process"])
-            .arg(format!("'{}'", exe.display()))
+        // The scan that was asked for travels with the restart, so the person
+        // lands back where they were rather than at step one.
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", "Start-Process"])
+            .arg(format!("'{}'", exe.display()));
+        if let Some(req) = &request {
+            // Each argument is wrapped in double quotes *inside* a PowerShell
+            // single-quoted string. Start-Process joins its argument list with
+            // spaces and quotes nothing itself, so without this a path with a
+            // space in it reaches the new window split in two. A Windows file
+            // name cannot contain a double quote, so this cannot mis-nest.
+            let quoted: Vec<String> = req
+                .to_args()
+                .iter()
+                .map(|a| format!("'\"{}\"'", a.replace('\'', "''")))
+                .collect();
+            cmd.arg("-ArgumentList").arg(quoted.join(","));
+        }
+        let status = cmd
             .arg("-Verb")
             .arg("RunAs")
             .status()
@@ -515,6 +620,8 @@ fn main() {
             restore,
             run_cli,
             elevation,
+            check_source,
+            startup_request,
             volumes,
             phone_screen,
             phone_input,
