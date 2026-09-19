@@ -754,6 +754,31 @@ Windows offers no way to read a raw volume without Administrator, so this is a
 prompt, not a limitation that can be engineered away. What does work without
 it: disk image files.
 
+### 3.16b How fast a real drive scans, and what is still slow
+
+Reported from a 728 GB NTFS volume: ten minutes at "reading filesystem
+metadata (1/1)" with nothing found. The scan was working, not hung - the $MFT
+was being read **one record per device read**, which is a separate 1 KiB
+unbuffered read for each of the drive's hundreds of thousands of records, and
+nothing was reported until the whole walk finished.
+
+Two costs, both fixed: the $MFT is now read a megabyte at a time, stopping at
+run boundaries (`rc-fs/tests/mft_reads.rs` counts device reads and fails if
+per-record reading returns: 6,068 records in 137 reads on the NTFS fixture,
+against 6,068 before), and the record-to-offset lookup binary-searches the
+$MFT's extents instead of walking them for every record, which was quadratic
+in the file count on a fragmented drive.
+
+Scans now report from inside themselves - which phase, how far through, how
+many deleted files so far - and check the stop flag every chunk, so Stop is
+immediate and keeps what was found.
+
+**Still slow, unfixed:** the ext4 reader re-reads a 4 KiB block for every
+inode it examines, so a large ext4 volume repeats the same read about thirty
+times. FAT and exFAT read a cluster at a time while walking directories, which
+is reasonable but unmeasured at scale. Neither has been run against a
+multi-hundred-gigabyte volume here; only NTFS has.
+
 ### 3.17 What the phone side deliberately will not do
 
 `rc android screen/tap/swipe/key/type` show a phone's display on this computer

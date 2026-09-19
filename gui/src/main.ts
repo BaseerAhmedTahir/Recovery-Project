@@ -582,6 +582,33 @@ async function applyFilter() {
   results.setCount(n);
   applyShape();
   $("#count").textContent = `${n.toLocaleString()} file${n === 1 ? "" : "s"}`;
+  // Nothing in this folder is a result, not a failure - but only if the drive
+  // itself had something. Say which it was, and offer the wider view.
+  if (n === 0 && (state.scope || state.category !== "everything")) {
+    const wider = await call<number>("set_view", {
+      filter: { text: "", folder: "", bands: [], kinds: [], exts: [], min_size: null, sort: null, descending: false },
+    });
+    $("#results").querySelector(".empty")!.innerHTML = wider
+      ? `${icon("empty")}<b>Nothing here from ${escapeHtml(state.scope || state.category)}</b>
+         <span class="faint">This drive still remembers ${wider.toLocaleString()} deleted
+         file${wider === 1 ? "" : "s"} elsewhere.</span>
+         <button id="widen" class="primary">Show all ${wider.toLocaleString()}</button>`
+      : `${icon("empty")}<b>No deleted files were found on this drive</b>
+         <span class="faint">On an SSD, Windows erases deleted files within seconds (TRIM), so
+         there is often nothing left to find. A deep scan of every sector may still turn up
+         older files.</span>`;
+    // set_view above changed the view; put the asked-for one back.
+    await call<number>("set_view", { filter });
+    $("#widen")?.addEventListener("click", () => {
+      state.scope = "";
+      state.scopeLabel = "";
+      state.category = "everything";
+      all(".toolbar .chip").forEach((c) =>
+        c.setAttribute("aria-pressed", String(c.getAttribute("data-cat") === "everything")),
+      );
+      applyFilter();
+    });
+  }
   const chip = $("#folder-chip");
   chip.hidden = !state.scope;
   chip.textContent = state.scope ? `In ${state.scopeLabel}` : "";

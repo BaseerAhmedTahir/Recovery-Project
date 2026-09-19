@@ -107,9 +107,19 @@ pub fn detect(device: &dyn ReadOnlyDevice, base: u64) -> Result<FsType> {
 /// "no deleted files found" - which would be a lie (SPEC.md section 9: no
 /// stubs pretending to be features).
 pub fn scan_volume(device: &dyn ReadOnlyDevice, base: u64) -> Result<(FsType, ScanResult)> {
+    scan_volume_with(device, base, &mut crate::ScanCtx::quiet())
+}
+
+/// As [`scan_volume`], reporting progress and able to stop part-way. A scan
+/// that stopped early says so in its notes and returns what it had.
+pub fn scan_volume_with(
+    device: &dyn ReadOnlyDevice,
+    base: u64,
+    ctx: &mut crate::ScanCtx,
+) -> Result<(FsType, ScanResult)> {
     let fs = detect(device, base)?;
     let result = match fs {
-        FsType::Ntfs => crate::ntfs::NtfsVolume::open(device, base)?.scan()?,
+        FsType::Ntfs => crate::ntfs::NtfsVolume::open(device, base)?.scan_with(ctx)?,
         FsType::Fat12 | FsType::Fat16 | FsType::Fat32 => {
             crate::fat::FatVolume::open(device, base)?.scan()?
         }

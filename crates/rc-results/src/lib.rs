@@ -516,7 +516,23 @@ pub fn scan_filesystems(
             total: 0,
             found: rows.len() as u64,
         });
-        let (fs, scan) = match rc_fs::scan_volume(device.as_ref(), *offset) {
+        // The scan reports from inside itself: on a real drive the $MFT walk
+        // is minutes long, and a bar that does not move reads as a hang.
+        let volume_note = format!("({}/{})", k + 1, offsets.len());
+        let mut fs_progress = |p: rc_fs::FsProgress| {
+            progress(Progress {
+                phase: if offsets.len() > 1 {
+                    format!("{} {volume_note}", p.phase)
+                } else {
+                    p.phase.clone()
+                },
+                done: p.done,
+                total: p.total,
+                found: rows.len() as u64 + p.found,
+            });
+        };
+        let mut ctx = rc_fs::ScanCtx::new(stop, &mut fs_progress);
+        let (fs, scan) = match rc_fs::scan_volume_with(device.as_ref(), *offset, &mut ctx) {
             Ok(x) => x,
             Err(e) => {
                 notes.push(format!("volume at byte {offset}: {e}"));

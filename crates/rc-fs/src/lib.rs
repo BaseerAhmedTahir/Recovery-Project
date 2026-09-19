@@ -13,10 +13,12 @@ pub mod exfat;
 pub mod ext4;
 pub mod fat;
 pub mod ntfs;
+pub mod progress;
 
-pub use detect::{detect, scan_volume, FsType};
+pub use detect::{detect, scan_volume, scan_volume_with, FsType};
 pub use entry::{
     DataLocation, Entry, EntryKind, EntryState, Extent, Geometry, PathConfidence, ScanResult,
     Timestamps,
 };
 pub use error::{FsError, Result};
+pub use progress::{FsProgress, ScanCtx};

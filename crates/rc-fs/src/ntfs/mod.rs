@@ -28,6 +28,9 @@ use std::collections::HashMap;
 /// memory silently, and the limit is reported rather than hit quietly.
 const MAX_RECORDS_IN_MEMORY: u64 = 2_000_000;
 
+/// MFT records read in one go: 1 MiB at the usual 1 KiB record size.
+const CHUNK_RECORDS: u64 = 1024;
+
 // Checked at compile time so the bound cannot be lowered to a value that would
 // silently skip records on an ordinary volume.
 const _: () = assert!(MAX_RECORDS_IN_MEMORY >= 1_000_000);
@@ -40,6 +43,8 @@ pub struct NtfsVolume<'a> {
     /// The $MFT's own cluster runs.
     mft_extents: Vec<Extent>,
     mft_size: u64,
+    /// The first $MFT cluster number of each extent, for binary search.
+    mft_vcn_starts: Vec<u64>,
 }
 
 impl<'a> NtfsVolume<'a> {
@@ -55,6 +60,7 @@ impl<'a> NtfsVolume<'a> {
             boot,
             mft_extents: Vec::new(),
             mft_size: 0,
+            mft_vcn_starts: Vec::new(),
         };
 
         // Record 0 is the $MFT itself; its $DATA runlist is the map we need to
@@ -77,6 +83,18 @@ impl<'a> NtfsVolume<'a> {
             rec.extents.iter().map(|e| e.cluster_count).sum::<u64>() * boot.cluster_bytes()
         };
         vol.mft_extents = rec.extents;
+        // Where each extent begins, in $MFT cluster numbers, for the lookup
+        // above. Sorted by construction: a runlist is in file order.
+        let mut seen = 0u64;
+        vol.mft_vcn_starts = vol
+            .mft_extents
+            .iter()
+            .map(|e| {
+                let start = seen;
+                seen += e.cluster_count;
+                start
+            })
+            .collect();
         Ok(vol)
     }
 
@@ -86,19 +104,23 @@ impl<'a> NtfsVolume<'a> {
 
     /// Translate a virtual cluster number within the $MFT to a byte offset on
     /// the device.
+    ///
+    /// Binary search rather than a walk from the first extent: this is called
+    /// for every MFT record, and the $MFT on a well-used drive can be in
+    /// hundreds of pieces, which made the walk quadratic in the size of the
+    /// drive's file list.
     fn mft_vcn_offset(&self, vcn: u64) -> Option<u64> {
-        let mut seen = 0u64;
-        for e in &self.mft_extents {
-            if vcn < seen + e.cluster_count {
-                if e.sparse {
-                    return None;
-                }
-                let within = vcn - seen;
-                return Some(self.base + (e.start_cluster + within) * self.boot.cluster_bytes());
-            }
-            seen += e.cluster_count;
+        let i = match self.mft_vcn_starts.binary_search(&vcn) {
+            Ok(i) => i,
+            Err(0) => return None,
+            Err(i) => i - 1,
+        };
+        let e = self.mft_extents.get(i)?;
+        let start = self.mft_vcn_starts[i];
+        if vcn >= start + e.cluster_count || e.sparse {
+            return None;
         }
-        None
+        Some(self.base + (e.start_cluster + (vcn - start)) * self.boot.cluster_bytes())
     }
 
     /// Byte offset of MFT record `index` on the device.
@@ -123,12 +145,71 @@ impl<'a> NtfsVolume<'a> {
         mft::parse_record(&mut buf, index, &self.boot)
     }
 
+    /// Read a stretch of MFT records that lie next to each other on the disk.
+    ///
+    /// One read per record is what this used to do, and on a 728 GB volume
+    /// with millions of records that is millions of 1 KiB unbuffered reads -
+    /// minutes of waiting with nothing to show. Records are contiguous within
+    /// an $MFT run, so they are read a megabyte at a time instead. The chunk
+    /// stops at a run boundary, where the next record is somewhere else.
+    ///
+    /// Returns the records parsed and how many record slots were consumed.
+    fn read_chunk(
+        &self,
+        first: u64,
+        limit: u64,
+        result: &mut ScanResult,
+        out: &mut Vec<MftRecord>,
+    ) -> u64 {
+        let rec_bytes = self.boot.mft_record_bytes as u64;
+        let Some(first_off) = self.record_offset(first) else {
+            return 1;
+        };
+        let mut n = 1u64;
+        while n < CHUNK_RECORDS && first + n < limit {
+            match self.record_offset(first + n) {
+                Some(o) if o == first_off + n * rec_bytes => n += 1,
+                _ => break,
+            }
+        }
+
+        let mut buf = vec![0u8; (n * rec_bytes) as usize];
+        let got = match self.device.read_bytes_at(first_off, &mut buf) {
+            Ok(g) => g as u64,
+            Err(e) => {
+                // A bad patch of an $MFT run: record it and move past this
+                // chunk rather than abandoning the volume.
+                result
+                    .damaged
+                    .push(format!("MFT records {first}..{}: {e}", first + n));
+                return n;
+            }
+        };
+        for i in 0..(got / rec_bytes) {
+            let start = (i * rec_bytes) as usize;
+            let slot = &mut buf[start..start + rec_bytes as usize];
+            match mft::parse_record(slot, first + i, &self.boot) {
+                Ok(Some(r)) => out.push(r),
+                Ok(None) => {}
+                Err(e) => result
+                    .damaged
+                    .push(format!("MFT record {}: {e}", first + i)),
+            }
+        }
+        n
+    }
+
     /// Scan the whole MFT.
     ///
     /// Allocated entries are returned alongside deleted ones because the
     /// scoring engine needs to know which clusters are occupied by live files
     /// (SPEC.md section 5.4); the CLI hides them by default.
     pub fn scan(&self) -> Result<ScanResult> {
+        self.scan_with(&mut crate::ScanCtx::quiet())
+    }
+
+    /// As [`NtfsVolume::scan`], reporting progress and able to stop part-way.
+    pub fn scan_with(&self, ctx: &mut crate::ScanCtx) -> Result<ScanResult> {
         let total = self.record_count();
         let mut result = ScanResult {
             geometry: crate::entry::Geometry {
@@ -150,15 +231,38 @@ impl<'a> NtfsVolume<'a> {
         }
         let scan_limit = total.min(MAX_RECORDS_IN_MEMORY);
 
-        // Pass 1: read every record.
+        // Pass 1: read every record, a megabyte at a time.
         let mut records: Vec<MftRecord> = Vec::new();
-        for index in 0..scan_limit {
-            match self.read_record(index) {
-                Ok(Some(r)) => records.push(r),
-                Ok(None) => {}
-                Err(e) => result.damaged.push(format!("MFT record {index}: {e}")),
+        let mut index = 0u64;
+        let mut stopped = false;
+        ctx.report("reading the list of files on this drive", 0, scan_limit, 0);
+        while index < scan_limit {
+            if ctx.stopped() {
+                stopped = true;
+                result.notes.push(format!(
+                    "stopped after {index} of {scan_limit} MFT records; what was found up to \
+                     there is listed"
+                ));
+                break;
+            }
+            index += self.read_chunk(index, scan_limit, &mut result, &mut records);
+            if index % (CHUNK_RECORDS * 8) < CHUNK_RECORDS {
+                let deleted = records.iter().filter(|r| !r.in_use).count() as u64;
+                ctx.report(
+                    "reading the list of files on this drive",
+                    index.min(scan_limit),
+                    scan_limit,
+                    deleted,
+                );
             }
         }
+        let scanned = index.min(scan_limit);
+        ctx.report(
+            "rebuilding the folders those files were in",
+            scanned,
+            scan_limit,
+            records.iter().filter(|r| !r.in_use).count() as u64,
+        );
 
         // Pass 2: index directories so paths can be walked upwards. Both live
         // and deleted directories are indexed, because a deleted file's parent
@@ -212,9 +316,10 @@ impl<'a> NtfsVolume<'a> {
             result.entries.push(entry);
         }
 
+        let _ = stopped;
         result.notes.push(format!(
             "scanned {} of {} MFT records; {} usable entries, {} damaged",
-            scan_limit,
+            scanned,
             total,
             result.entries.len(),
             result.damaged.len()
