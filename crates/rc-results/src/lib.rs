@@ -404,6 +404,20 @@ pub struct Progress {
     pub done: u64,
     pub total: u64,
     pub found: u64,
+    /// What `done` and `total` count, so the interface can say "3,073 of
+    /// 5,774 files" rather than showing a file count formatted as bytes.
+    pub unit: Unit,
+}
+
+/// What a progress figure counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unit {
+    /// Bytes of the device read so far.
+    #[default]
+    Bytes,
+    /// Records, entries or files handled so far.
+    Items,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -515,6 +529,7 @@ pub fn scan_filesystems(
             done: 0,
             total: 0,
             found: rows.len() as u64,
+            unit: Unit::Items,
         });
         // The scan reports from inside itself: on a real drive the $MFT walk
         // is minutes long, and a bar that does not move reads as a hang.
@@ -529,6 +544,7 @@ pub fn scan_filesystems(
                 done: p.done,
                 total: p.total,
                 found: rows.len() as u64 + p.found,
+                unit: Unit::Items,
             });
         };
         let mut ctx = rc_fs::ScanCtx::new(stop, &mut fs_progress);
@@ -596,6 +612,7 @@ pub fn scan_filesystems(
                     done: i as u64,
                     total: deleted.len() as u64,
                     found: rows.len() as u64,
+                    unit: Unit::Items,
                 });
             }
         }
@@ -629,10 +646,11 @@ pub fn carve(
         stop,
         &mut |p| {
             progress(Progress {
-                phase: "carving".into(),
+                phase: "searching every sector of the drive".into(),
                 done: p.next_offset - p.range_start,
                 total: p.range_end - p.range_start,
                 found: p.candidates,
+                unit: Unit::Bytes,
             })
         },
     )?;

@@ -39,6 +39,8 @@ export interface Progress {
   done: number;
   total: number;
   found: number;
+  /** Whether done/total count bytes of the drive or files. */
+  unit?: "bytes" | "items";
 }
 
 export interface Device {
@@ -255,7 +257,13 @@ async function mock<T>(cmd: string, a: any): Promise<T> {
         done += total / 22;
         mockRows = Math.min(4000, mockRows + 320);
         (mockListeners["progress"] ?? []).forEach((h) =>
-          h({ phase: done < total / 2 ? "reading the filesystem" : "searching the whole drive", done, total, found: mockRows }),
+          h({
+            phase: done < total / 2 ? "reading the list of files on this drive" : "searching every sector of the drive",
+            done,
+            total,
+            found: mockRows,
+            unit: done < total / 2 ? "items" : "bytes",
+          }),
         );
         if (done >= total) {
           clearInterval(tick);

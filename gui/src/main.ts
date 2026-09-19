@@ -403,7 +403,13 @@ listen<Progress>("progress", (p) => {
   if (p.total > 0) {
     bar.classList.remove("indeterminate");
     fill.style.width = `${Math.min(100, (p.done / p.total) * 100).toFixed(1)}%`;
-    $("#scan-phase").textContent = `${p.phase} — ${bytes(p.done)} of ${bytes(p.total)}`;
+    // Bytes of a drive and counts of files are both progress, but saying
+    // "3.0 KB of 5.6 KB" about a list of files is nonsense.
+    const amount =
+      p.unit === "items"
+        ? `${p.done.toLocaleString()} of ${p.total.toLocaleString()}`
+        : `${bytes(p.done)} of ${bytes(p.total)}`;
+    $("#scan-phase").textContent = `${p.phase} — ${amount}`;
   } else {
     bar.classList.add("indeterminate");
     $("#scan-phase").textContent = p.phase;
